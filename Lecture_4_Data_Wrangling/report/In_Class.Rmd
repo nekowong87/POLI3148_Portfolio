@@ -1,0 +1,210 @@
+---
+title: "In-class ex"
+output: html_document
+date: "2023-09-28"
+---
+
+# 1. Codebook Lookup
+
+1.  **What indicators regarding the quality of education are available in the V-Dem datasets?**
+    -   *Education 15+ (E) (e_peaveduc)*
+
+        -   *The Average years of education in the total population aged 15 years and older.*
+
+    -   *Educational inequality, Gini (E) (e_peedgini)*
+
+        -   *Gini coefficient of educational inequality estimated from average education data*
+2.  **What are the data's coverage (i.e., for which countries and years do we have data?)**
+    -   For *Education 15+ (E) (e_peaveduc)*
+
+        -   Years: 1820-2022
+
+    -   For *Educational inequality, Gini (E) (e_peedgini)*
+
+        -   Years: 1850-2010
+3.  What are their sources? Provide the link to least 1 source.
+    -   Sources : *Clio Infra (clio-infra.eu), drawing on Mitchell (1998a, 1998b, 1998c), United States Census Bureau (2021), UNESCO, Földvári and van Leeuwen (2010a), Leeuwen, van Leeuwen- Li, Földvári (2011), Leeuwen, van Leeuwen-Li, Földvári (2012a), Leeuwen, van Leeuwen-Li, Földvári (2012b), Didenko, Foldvari, van Leeuwen (2012).*
+
+    -   Link: <https://clio-infra.eu/Indicators/AverageYearsofEducation.html>
+
+# Data Pre-processing
+
+```{r}
+library(tidyverse)
+library(dplyr)
+d <- read_csv("_DataPublic_/vdem/1984_2022/vdem_1984_2022_external.csv", show_col_types = FALSE)
+
+#names(d)
+```
+
+# 2. Subset by Columns
+
+1.  Create a dataset containing only the country-year identifiers and indicators of education quality.
+
+    ```{r}
+    #create new dataset
+    d_edu <- d |>
+      select(country_name, country_id, year, e_peaveduc, e_peedgini)
+    ```
+
+2.  Rename the columns of education quality to make them informative.
+
+```{r}
+#rename columns
+d_edu <- d_edu |>
+  rename("Average_Education" = "e_peaveduc", "Gini" = "e_peedgini", "Country" = "country_name", "ID" = "country_id", "Year" = "year")
+```
+
+# 3. Subset by Rows
+
+1.  List 5 countries-years that have the highest education level among its population.
+
+    ```{r}
+    #List top 5 Country-Years (Avg. edu)
+    d_edu |>
+      select(Country, Year, Average_Education) |>
+      arrange(-Average_Education) |>
+      slice_head(n = 5)
+      
+    ```
+
+2.  List 5 countries-years that suffer from the most severe inequality in education.
+
+    ```{r}
+    #List bottom 5 country-years (Gini)
+    d_edu |>
+      select(Country, Year, Gini) |>
+      arrange(-Gini) |>
+      slice_head(n = 5)
+    ```
+
+# 4. Summarize the Data
+
+1.  Check data availability: For which countries and years are the indicators of education quality available?
+
+    ```{r}
+    # Data availability/ integrity check
+
+    #Reference list: If indicators are available, mark as true
+    d_edu_filtered <- d_edu |>
+      group_by(Country, Year) |>
+      mutate (Average_Edu_available = !any(is.na(Average_Education)), Average_Gini_available = !any(is.na(Gini)))
+    ```
+
+    ```{r}
+    #missing by country
+    d_edu|>
+      group_by(Country) |>
+      #create a column to indicate missing Average_Education
+      mutate (Average_Education_missing = is.na(Average_Education), Gini_missing = is.na(Gini)) |>
+      summarize(n_Average_Education_missing = sum(Average_Education_missing), n_Gini_missing = sum(Gini_missing))
+    ```
+
+    ```{r}
+    #missing by year
+    d_edu|>
+      group_by(Year) |>
+    mutate (Average_Education_missing = is.na(Average_Education), Gini_missing = is.na(Gini)) |>
+      summarize(n_Average_Education_missing = sum(Average_Education_missing), n_Gini_missing = sum(Gini_missing))
+    ```
+
+2.  Create two types of country-level indicators of education quality
+
+-   Average level of education quality from 1984 to 2022
+
+```{r}
+d_edu_country1 <- d_edu |>
+  group_by(Country) |>
+  summarise(Mean_Average_Education = mean(Average_Education, na.rm = TRUE), Mean_Gini = mean(Gini, na.rm = TRUE))
+
+d_edu_country1
+```
+
+-   Change of education quality from 1984 to 2022
+
+```{r}
+d_edu_country2 <- d_edu |>
+  filter(Year >= 1984 & Year <= 2010) |>
+  group_by(Country) |>
+  arrange(Year) |>
+  summarize(Average_Education_Growth = (last(Average_Education) - first(Average_Education))/last(Average_Education), Gini_Growth = (last(Gini) - first(Gini))/last(Gini)) |>
+  ungroup() |>
+  arrange(Country)
+
+d_edu_country2
+```
+
+3.  Examine the data and *briefly* discuss: Which countries perform the best and the worst in terms of education quality in the past four decades?
+
+### Best and Worst Ranking
+
+First, we will rank all of the countries in terms of the above 4 indicators to get the top 10 and bottom 10 countries in terms of each category.
+
+```{r}
+merged_table <- merge(d_edu_country1, d_edu_country2, by = "Country")
+```
+
+```{r}
+ranked_data <- merged_table |>
+  #mean average
+  arrange(-Mean_Average_Education)|>
+  mutate(Ranking_Mean_Ave = row_number()) |>
+  #mean geni
+  arrange(Mean_Gini) |>
+  mutate(Ranking_Mean_Gini = row_number()) |>
+  #growth average
+  arrange(-Average_Education_Growth) |>
+  mutate(Ranking_Ave_Growth = row_number()) |>
+  #Gini growth
+  arrange(Gini_Growth) |>
+  mutate(Ranking_Gini_Growth = row_number())
+```
+
+Then we can try to create an overall ranking.
+
+```{r}
+overall_ranking <- ranked_data |>
+  mutate(Total_Score = (Ranking_Mean_Ave + Ranking_Mean_Gini + Ranking_Ave_Growth + Ranking_Gini_Growth)/4) |>
+  arrange(Total_Score) |>
+  mutate(Overall_Rank = row_number()) |>
+  select(Country, Overall_Rank)
+```
+
+Hence, the best performing countries are:
+
+```{r}
+slice_head(overall_ranking, n = 10)
+```
+
+Whereas, the worst performing countries are:
+
+```{r}
+slice_tail(overall_ranking, n = 10)
+```
+
+### Additional Notes
+
+Something interesting to note is that there is a **strong inverse correlation between the average education level and the Gini coefficient** (-0.889). In other words, the higher the average education level, the lower the education inequality. Similarly, there is a strong correlation between the average education level and the growth in average education level. While we cannot define the causation, it is noted that countries with higher education levels also experience higher growth in education levels.
+
+On the other hand, there is a weak inverse correlation between the average education level growth and growth (change) in Gini coefficient (-0.195). In addition, there is no correlation between the Gini coefficient and growth in Gini coefficient (0.032). It can be concluded that the improvement in inequality is not related to the inequality of education. Hence, the level inequality does not impact the rate of improvement.
+
+### Correlation analysis (for reference)
+
+```{r}
+#correlation between average education and gini coefficient
+cor(d_edu_country1$Mean_Average_Education, d_edu_country1$Mean_Gini, use = "complete.obs")
+```
+
+```{r}
+cor(d_edu_country2$Average_Education_Growth, d_edu_country2$Gini_Growth, use = "complete.obs")
+```
+
+```{r}
+#correlation between average education and and average educaiton growth
+cor(merged_table$Mean_Average_Education, merged_table$Average_Education_Growth, use = "complete.obs")
+```
+
+```{r}
+#correlation between gini and and gini growth
+cor(merged_table$Mean_Gini, merged_table$Gini_Growth, use = "complete.obs")
+```

@@ -1,0 +1,253 @@
+---
+title: "Outline (Inclass notes)"
+output: html_document
+date: "2023-09-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Outline
+
+### 0. Load the `tidyverse` Packages
+
+This section loads the packages we need in this lecture.
+
+```{r}
+library(tidyverse)
+```
+
+### 1. Import and Export the V-Dem Data
+
+This section loads the VDEM dataset and describe its basic information
+
+```{r}
+d <- read_csv("_DataPublic_/vdem/1984_2022/vdem_1984_2022_external.csv")
+```
+
+### 2. to take a subset of *columns* in the existing data: `select`
+
+Our second step is to select economic development indicators
+
+First we look at the identifiers of the indicator
+
+```{r}
+names(d)
+```
+
+Select country year column --\> only distinct
+
+Select country year column --\> only distinct country_names
+
+```{r}
+d |> select(country_name, country_id, year) |>
+  distinct(country_name)
+```
+
+Select only e_gdp (GDP) and e_gdppc (GDP per capita)
+
+```{r}
+d |> select(country_name, country_id, year, e_gdp, e_gdppc)
+```
+
+Create a new dataset
+
+```{r}
+d_gdp <- d |>
+  select(country_name, country_id, year, e_gdp, e_gdppc)
+```
+
+### 3. to rename columns: `rename`
+
+\*does not make any changes to the original object in the environment (d) --\> just rename d_gdp
+
+```{r}
+d_gdp <- d_gdp |>
+  rename("GDP" = "e_gdp","GDP_per_Capita" = "e_gdppc", "Country" = "country_name", "ID" = "country_id", "Year" = "year")
+```
+
+if you do not do the assignment, there will be no changes to the object in the environment (e.g. d_gdp2) --\> you can open a new object in order not to overwrite the original dataset
+
+\*X need to create new object if you want to view vs if you want to **reuse** the object
+
+```{r}
+d_gdp2 <- d
+d_gdp2 |>
+  rename("GDP" = "e_gdp","GDP_per_Capita" = "e_gdppc", "Country" = "country_name", "ID" = "country_id", "Year" = "year")
+d_gdp2 #no changes should be shown
+```
+
+### 4. to take a subset of *rows* by some simple conditions: `slice_`
+
+get countries-years with highest GDP
+
+```{r}
+d_gdp |>
+  slice_max(order_by = GDP, n = 10)
+```
+
+get random sample (every time you run, you get a different result)
+
+```{r}
+d_gdp |>
+  slice_sample(n = 10)
+
+```
+
+### 5. to take a subset of *rows* by some more complicated conditions: `filter`
+
+want 2000-2005
+
+```{r}
+d_gdp |>
+  filter(Year>=2000 & Year<=2005 & Country == "China")
+```
+
+### 6. to sort the rows based on the value of one or multiple columns: `arrange`
+
+arrange by GDP per Capita (asc.)
+
+```{r}
+d_gdp |>
+  arrange(GDP_per_Capita)
+```
+
+arrange by GDP per Capita (desc.) use minus "-" sign
+
+```{r}
+d_gdp |>
+  arrange(-GDP_per_Capita)
+```
+
+### 7. to perform (4) (5) (6) group by group: `group_by`, `ungroup`
+
+create a dataset that contains the year of the highest development level for each country/region respectively
+
+1.  perform a data availability/ integrity check --\> aggregate the data into new country-levle data set
+    1.  average development level form 1984 to 2022
+    2.  magnitute of growth from 1984 to 2022
+
+```{r}
+d_gdp |>
+  group_by(Country) |>
+  slice_max(GDP, n = 1)
+```
+
+compared with w/o group by --\> only show one record (max val of ALL) instead of max val of EACH
+
+```{r}
+#how many countries are there for each country?
+d_gdp |>
+  group_by(Country) |>
+  count() #count number of rows for each country
+  
+```
+
+```{r}
+#country when year has the worst GDP
+d_gdp |>
+  group_by(Country) |>
+  slice_min(order_by = GDP, n = 1)
+```
+
+### 8. to create new columns in the data: `group_by`, `mutate`, `ungroup`
+
+**Mutate function**
+
+create new columns
+
+```{r}
+#create new column "new"
+d_gdp |>
+  mutate(new = 1)
+
+#create new column as function of old column
+d_gdp |>
+  mutate(GDP2 = GDP)
+
+#add columns with new operations
+d_gdp |>
+  mutate(GDP3 = log(GDP))
+```
+
+create columns based on characteristics of a group
+
+```{r}
+#new column = GDP relative to the average GDP in the world
+d_gdp |>
+  mutate(relative_GDP = GDP/mean(GDP, na.rm = TRUE)) #use na.rm to ignore missing values, else NA output
+```
+
+```{r}
+#new column = the GDP relative to the average of the country in the world 1984 to 2022
+d_gdp |>
+  group_by(Country)|>
+  mutate(relative_country_GDP = GDP/(mean(GDP, na.rm = TRUE)))
+```
+
+```{r}
+#country-year development with reference to that of 1984
+d_gdp |>
+  group_by(Country) |>
+  arrange(Year) |>
+  mutate(GDP_over_1984 = GDP/first(GDP)) |>
+  ungroup() |>
+  arrange(Country, Year)
+```
+
+```{r}
+#year-on-year development level with reference tot htat of 1984
+d_gdp |>
+  group_by(Country) |>
+  mutate(GDP_yoy = GDP - lag(GDP, n = 1)) |>
+  ungroup() |>
+  arrange(Country, Year)
+
+```
+
+### 9. to summarize the data: `group_by`, `summarise`, `ungroup`
+
+\*we seldom use summarise to get summary statistics for the whole table
+
+```{r}
+#average GDP level of the world
+d_gdp |>
+  summarize(gdp_average = mean(GDP, na.rm = TRUE), gdp_average_per_capita = mean(GDP_per_Capita, na.rm = TRUE))
+```
+
+```{r}
+#average development level for each country
+d_gdp |>
+  group_by(Country) |>
+  summarize(gdp_average = mean(GDP, na.rm = TRUE))
+```
+
+```{r}
+#GDP growth and GDP per capira growth 2019 over 1984
+d_gdp |>
+  #filter years >= 1984, years <= 2019
+  filter(Year >= 1984 & Year <= 2019) |>
+  group_by(Country) |>
+  arrange(Year) |>
+  summarize(gdp_growth = (last(GDP) - first(GDP))/last(GDP), gdp_growth_per_capita = (last(GDP_per_Capita) - first(GDP_per_Capita))/last(GDP_per_Capita)) |>
+  ungroup() |>
+  arrange(Country)
+```
+
+\*we want to see what data is available in a data set and see if there are some missing data points
+
+```{r}
+#data integrity check **for checking availability
+d_gdp |>
+  group_by(Country) |>
+  #create a column to indicate missing GDP
+  mutate (gdp_missing = is.na(GDP)) |>
+  summarize(n_gdp_missing = sum(gdp_missing))
+```
+
+\*\* use of Pipe "\|\>"
+
+-   subset of variables and filter down to show the step-by-step flow and reduce operators
+
+-   consequence: multiple steps -\> need to product some intermediary outputs
