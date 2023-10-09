@@ -1,7 +1,10 @@
 ---
 title: "In-class ex"
-output: html_document
-date: "2023-09-28"
+author: "Nicole Wong 3035785697"
+date: "Last update: 9 Oct 2023"
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 # 1. Codebook Lookup
