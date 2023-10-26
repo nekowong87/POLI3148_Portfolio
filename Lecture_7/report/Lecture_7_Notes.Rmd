@@ -1,0 +1,146 @@
+---
+title: "Lecture 7 Notes Data Visualisation"
+author: "Wong Nicole"
+date: "2023-10-26"
+output: html_document
+---
+
+> Life is short. Use graphs!
+
+# Data Visualisation
+
+[Our Task: Extend the \"Health and Wealth\" Analysis](https://github.com/haohanchen/HKU_POLI3148_23Fall/tree/main/Lec_07/1_data_visualization_1#our-task-extend-the-health-and-wealth-analysis-1)
+
+## Data Preparation
+
+### Load the data
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+#stack rows of different tables together (e.g. cover different years but share similar indicators)
+d_full <- bind_rows(
+  read_csv("_DataPublic_/vdem/1789_1827/vdem_1789_1827_external.csv"),
+  read_csv("_DataPublic_/vdem/1867_1905/vdem_1867_1905_external.csv"),
+  read_csv("_DataPublic_/vdem/1906_1944/vdem_1906_1944_external.csv"),
+  read_csv("_DataPublic_/vdem/1945_1983/vdem_1945_1983_external.csv"),
+  read_csv("_DataPublic_/vdem/1984_2022/vdem_1984_2022_external.csv")
+)
+```
+
+### Select indicators of interest
+
+-   Region (geographic location of groups by group, e.g. continent)
+
+-   Wealth
+
+    -   GDP per capita
+
+-   Population (total)
+
+    -   ClioInfra
+
+    -   World Bank
+
+-   Health
+
+    -   Life expectancy
+
+    -   Infant mortality
+
+-   Various democracy indicators
+
+```{r}
+d <- d_full |>
+  select(
+    country_text_id, year, 
+    e_regiongeo, e_pelifeex, e_gdppc, 
+    e_mipopula, e_wb_pop, e_peinfmor,
+    e_boix_regime, e_lexical_index, e_p_polity) |>
+  rename("region" = "e_regiongeo", 
+         "life_expectancy" = "e_pelifeex", 
+         "gdppc" = "e_gdppc",
+         "population_ClioInfra" = "e_mipopula", 
+         "population_WorldBank" = "e_wb_pop",
+         "infant_mortality" = "e_peinfmor",
+         "democracy_binary" = "e_boix_regime",
+         "democracy_lexical" = "e_lexical_index",
+         "democracy_polity5" = "e_p_polity") |>
+  filter(year >= 1800)
+```
+
+```{r}
+#change the second field based on location
+saveRDS(d, "Lecture_7/data/wealth_and_health.rds")
+```
+
+```{r}
+#quick overview of the data
+summary(d)
+```
+
+## Problem: Multiple Population Data Sources!
+
+-   There are two population indicators that cover different years
+
+-   For consistency, check which years are available for BOTH indicators
+
+```{r}
+#get table where years overlap
+d_pop_overlap <- d |> select(country_text_id, year, starts_with("population_")) |> 
+  drop_na()
+print(d_pop_overlap, n = 3)
+```
+
+```{r}
+#get list of overlapping years
+unique(d_pop_overlap$year)
+```
+
+```{r}
+#get the correlation between the two population indicators
+cor(d_pop_overlap$population_ClioInfra, d_pop_overlap$population_WorldBank)
+```
+
+### Set a rule to merge both population columns
+
+-   Different units: Divide `population_WorldBank` by 1000 (so that the unit of population is \"in thousands\"
+
+-   Different coverage but almost perfect correlation
+
+    -   For years that only one dataset has coverage, take the value from the dataset that has available data points.
+
+    -   For years that both datasets have coverage, take their `mean`.
+
+That means, effectively, we are taking the `mean` and allow `na.rm = TRUE`. Think about it.
+
+```{r}
+# STEP 1: "Harmonize" the units
+d <- d |> mutate(population_WorldBank = population_WorldBank / 1000)
+```
+
+```{r}
+# STEP 2 Method 1: Slower but use only tidyverse functionality
+# [Slow! Not recommended!]
+d <- d |> rowwise() |>
+  mutate(population = mean(c_across(c("population_ClioInfra", "population_WorldBank")), 
+                           na.rm = TRUE), .after = population_WorldBank) |>
+  ungroup()
+```
+
+```{r}
+# STEP 2 Method 2: Faster but use a non-tidyverse function rowMeans() 
+# and create a temporary vector tmp_population, which I remove after use with rm()
+# [Faster !Recommended!]
+tmp_population <- d |> select(population_ClioInfra, population_WorldBank) |> rowMeans(na.rm = TRUE)
+d <- d |> mutate(population = !!(tmp_population), .after = population_WorldBank)
+
+rm(tmp_population)
+```
+
+```{r}
+# Remove the columns we no longer need
+d <- d |> select(-population_ClioInfra, -population_WorldBank)
+```

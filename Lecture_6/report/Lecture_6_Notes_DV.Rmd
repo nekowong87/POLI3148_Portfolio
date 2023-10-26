@@ -1,0 +1,10 @@
+---
+title: "Lecture_6_Notes_DV"
+author: "Wong Nicole"
+date: "2023-10-12"
+output: html_document
+---
+
+# Data Visualization
+
+## Importing Data

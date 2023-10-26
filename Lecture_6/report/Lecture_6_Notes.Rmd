@@ -1,0 +1,409 @@
+---
+title: "Lecture 6 Notes Data Wrangling"
+author: "Wong Nicole"
+output: html_document
+date: "2023-10-12"
+---
+
+# Data Wrangling
+
+## Importing Data
+
+```{r}
+#import VDem data
+library(tidyverse)
+d <- read_csv("_DataPublic_/vdem/1984_2022/vdem_1984_2022_external.csv")
+d |> print(n = 3)
+
+#create new data set focusing on economic indicators
+
+d_gdp <- d |> 
+  select(country_text_id, year, e_gdp, e_gdppc) |>
+  rename("gdp" = "e_gdp", "gdppc" = "e_gdppc")
+
+d_gdp |> print(n = 3)
+```
+
+## Reshaping Data
+
+### Why do we reshape data?
+
+1.  Data cleaning
+2.  Data visualization (e.g. some functions only take tables shaped in a specific way)
+3.  Data sharing (e.g. you want to export the data for human readers)
+
+### Examples
+
+#### Wide to Long: `pivot_longer`
+
+Example: one row for each variable
+
+rows: country-gdp & country-gdppc
+
+```{r}
+d_gdp_long <- d_gdp |>
+  pivot_longer(cols = c("gdp", "gdppc"), 
+               names_to = "variable", values_to = "value")
+
+d_gdp_long |> print(n = 4)
+```
+
+#### Long to Wide: `pivot_wider`
+
+```{r}
+#reverse the d_gdp_long
+d_gdp_wide_1 <- d_gdp_long |>
+  pivot_wider(names_from = "variable", values_from = "value")
+
+d_gdp_wide_1 |> print(n = 4)
+```
+
+#### Make each unique value in a column a column
+
+Example: Make year the column variable, i.e.
+
+-   rows: country-gdp & country-gdppc
+
+-   columns: year
+
+```{r}
+#make year the column
+d_gdp_wide_2 <- d_gdp_long |>
+  pivot_wider(names_from = "year", values_from = "value")
+
+d_gdp_wide_2 |> print(n = 2)
+```
+
+Example: Make the country the column variable
+
+```{r}
+d_gdp_wide_3 <- d_gdp_long |>
+  pivot_wider(names_from = "country_text_id", values_from = "value")
+
+d_gdp_wide_3 |> print(n = 2)
+```
+
+## Stack Tables
+
+-   Merge (or "stack") two data sets
+
+-   \*\*\*Only when you know you can just safely stack them together as this is quite error prone!
+
+### Task
+
+-   Let's say we want to merge your GDP data `d_gdp` with some additional datasets that *you know* you can just safely stack together.
+
+-   Example
+
+    -   Merge with GDP data from 1906 to 1983
+
+    -   Merge with education and Freedom House data from 1984 to 2022
+
+#### Load New Data
+
+-   Aim: Stack data vertically
+
+-   GDP data from
+
+    -   1945-1983
+
+    -   1906-1944
+
+```{r, message=FALSE}
+d_gdp_1945 <- 
+  read_csv("_DataPublic_/vdem/1945_1983/vdem_1945_1983_external.csv") |>
+  select(country_text_id, year, e_gdp, e_gdppc) |>
+  rename("gdp" = "e_gdp", "gdppc" = "e_gdppc")
+
+d_gdp_1906 <- 
+  read_csv("_DataPublic_/vdem/1906_1944/vdem_1906_1944_external.csv") |>
+  select(country_text_id, year, e_gdp, e_gdppc) |>
+  rename("gdp" = "e_gdp", "gdppc" = "e_gdppc")
+
+d_gdp_1945 |> print(n = 2) 
+
+d_edu <- d |>
+  select(e_peaveduc, e_peedgini) |>
+  rename("edu_15" = "e_peaveduc", "edu_gini" = "e_peedgini")
+
+d_fh <- d |>
+  select(starts_with("e_fh")) |>
+  rename("fh_CivilLiberty" = "e_fh_cl", "fh_PoliticalRight" = "e_fh_pr",
+         "fh_RuleOfLaw" = "e_fh_rol", "fh_Status" = "e_fh_status")
+
+d_fh |> print(n = 2)
+```
+
+#### `bind_rows`
+
+-   Match columns with the same names
+
+-   Includes columns from BOTH data sets, set missing values as NA
+
+```{r}
+d_gdp_1945_2022 <- bind_rows(d_gdp, d_gdp_1945) # can take multiple data frames
+d_gdp_1945_2022 |> print(n = 3)
+unique(d_gdp_1945_2022$year) |> sort()
+
+d_gdp_1906_2022 <- bind_rows(d_gdp, d_gdp_1945, d_gdp_1906) # can take multiple data frames
+d_gdp_1906_2022 |> print(n = 3)
+unique(d_gdp_1906_2022$year) |> sort()
+```
+
+#### `bind_cols`
+
+```{r}
+d_gdp_edu_fh <- bind_cols(d_gdp, d_edu, d_fh) # can take multiple data frames
+d_gdp_edu_fh |> print(n = 3)
+names(d_gdp_edu_fh)
+```
+
+## Join Tables
+
+### Tasks: Understand the behavior of different `join_` functions
+
+-   `left_join`: Merge and only keep observations that appear in the left-hand-side table.
+
+-   `right_join`: Merge and only keep observations that appear in the right-hand-side table.
+
+-   `inner_join`: Merge and only keep observations that appear in both tables.
+
+-   `full_join`: Merge and keep observations that appear either table.
+
+-   `anti_join`: Filter out observations that does appears in the right-hand-side table
+
+-   `semi_join`: Filter out observations that does not appear in the right-hand-side table
+
+### Task 1: The Case
+
+Join two datasets from the V-Dem data using the above different `join_` functions
+
+-   *GDP* data from 2000-2022
+
+-   *GDP per capita* data from 1984 to 2010
+
+```{r}
+#load data set
+d_gdp_2000_2022 <- d |> filter(year %in% 2000:2022) |>
+  select(country_text_id, year, e_gdp) |> rename("gdp" = "e_gdp")
+
+d_gdppc_1984_2010 <- d |> filter(year %in% 1984:2010) |>
+  select(country_text_id, year, e_gdppc) |> rename("gdppc" = "e_gdppc")
+
+d_gdp_2000_2022 |> print(n = 2)
+d_gdppc_1984_2010 |> print(n = 2)
+```
+
+#### `left_join/ right_join`
+
+-   merge and only keep identifiers that show up on the left/right table
+
+```{r}
+#left join
+d_lj <- d_gdp_2000_2022 |> 
+  left_join(d_gdppc_1984_2010, by = c("country_text_id", "year"))
+
+d_lj |> print(n = 2)
+unique(d_lj$year) |> sort()
+```
+
+```{r}
+#right join
+d_rj <- d_gdp_2000_2022 |> 
+  right_join(d_gdppc_1984_2010, by = c("country_text_id", "year"))
+
+d_rj |> print(n = 2)
+unique(d_rj$year) |> sort()
+```
+
+### `inner_join`
+
+-   merge and only keep identifiers that show up in [**both**]{.underline} tables
+
+```{r}
+d_ij <- d_gdp_2000_2022 |> 
+  inner_join(d_gdppc_1984_2010, by = c("country_text_id", "year"))
+
+d_ij |> print(n = 2)
+unique(d_ij$year) |> sort()
+```
+
+### `full_join`
+
+-   merge and only keep all identifiers
+
+```{r}
+d_fj <- d_gdp_2000_2022 |> 
+  full_join(d_gdppc_1984_2010, by = c("country_text_id", "year"))
+
+d_fj |> print(n = 2)
+unique(d_fj$year) |> sort()
+```
+
+### `semi_join`
+
+-   filter out observations that appears in the right table
+
+```{r}
+d_sj <- d_gdp_2000_2022 |> 
+  semi_join(d_gdppc_1984_2010, by = c("country_text_id", "year"))
+
+d_sj |> print(n = 2)
+unique(d_sj$year) |> sort()
+```
+
+### `anti_join`
+
+-   filter out observations that does [**NOT**]{.underline} appears in the right table
+
+```{r}
+d_aj <- d_gdp_2000_2022 |> 
+  anti_join(d_gdppc_1984_2010, by = c("country_text_id", "year"))
+
+d_aj |> print(n = 2)
+unique(d_aj$year) |> sort()
+```
+
+### Join by Identifiers with Different Variable Names
+
+If the identifiers have different names, you have two options:
+
+(1) Rename it beforehand
+
+```{r}
+#create artificial identifier
+d_gdppc_1984_2010_t <- d_gdppc_1984_2010 |> 
+  rename("country_id" = "country_text_id")
+
+# Option 1: Rename the variables
+d_aj_t <- d_gdp_2000_2022 |> 
+  rename("country_id" = "country_text_id") |>
+  anti_join(d_gdppc_1984_2010_t, by = c("country_id", "year"))
+```
+
+(2) specify the `by =` argument differently
+
+```{r}
+# Option 2: Specify the "by =" argument with a *named vector*
+d_aj_t_2 <- d_gdp_2000_2022 |> 
+  anti_join(d_gdppc_1984_2010_t, 
+            by = c("country_text_id" = "country_id", 
+                   "year" = "year"))
+```
+
+### Many-to-One Join: Repeat!
+
+Calculate each country's average 1984-2010 *GDP per capita* and merge it with our annual GDP data from 2000 to 2022.
+
+```{r}
+d_gdppc_1984_2010_avg <- d_gdppc_1984_2010 |> group_by(country_text_id) |>
+  summarise(gdppc_1984to2010 = mean(gdppc, na.rm = TRUE))
+d_gdppc_1984_2010_avg |> print(n = 2)
+```
+
+```{r}
+d_lj_ManyToOne <- d_gdp_2000_2022 |> 
+  left_join(d_gdppc_1984_2010_avg, by = "country_text_id")
+d_lj_ManyToOne |> print(n = 2)
+```
+
+### Remarks about Join
+
+-   Joining tables may be error-prone to avoid replication issue
+
+-   Good habits
+
+    -   Add suffixes/ prefixes indicating data sources
+
+    -   Add binary indicators (1/0) indicating from in which data set each observation is available
+
+#### Adding Binary Indicators
+
+```{r}
+# The d_gdp_2000_2022 data are from V-Dem
+d_gdp_2000_2022_t <- d_gdp_2000_2022 |> mutate(source_vdem = 1)
+
+# *Pretend* that the d_gdppc_1984_2010 data are from the World Bank
+d_gdppc_1984_2010_t <- d_gdppc_1984_2010 |> mutate(source_wb = 1)
+
+d_fj_habit <- d_gdp_2000_2022_t |> 
+  full_join(d_gdppc_1984_2010_t, by = c("country_text_id", "year"))
+
+d_fj_habit |> print(n = 3)
+```
+
+```{r}
+#Identify data overlapping
+d_fj_habit |>
+  group_by(source_vdem, source_wb) |>
+  count()
+```
+
+#### Adding Suffixes/Prefixes
+
+```{r}
+d_gdp_2000_2022_rn <- d_gdp_2000_2022 |> 
+  rename("vdem_gdp" = "gdp")
+  # rename_at(vars(-c("country_text_id", "year")), ~str_c("vdem_", .))
+
+d_gdppc_1984_2010_rn <- d_gdppc_1984_2010 |> 
+  rename("wb_gdppc" = "gdppc")
+  # rename_at(vars(-c("country_text_id", "year")), ~str_c("wb_", .))
+
+d_fj_habit_2 <- d_gdp_2000_2022_rn |>
+  full_join(d_gdppc_1984_2010_rn, by = c("country_text_id", "year"))
+
+d_fj_habit_2 |> print(n = 3)
+```
+
+# Save Outputs
+
+## Saving Your Outputs after Data Wrangling
+
+You can save your clean data in a variety of formats. I will highlight two most popular options
+
+-   `.csv` "comma-separated values," readable by Excel or a text editor
+
+-   `.rds` "R data serialization," readable by R only
+
+```{r}
+# Save to a .csv file
+write_csv(d_gdp_1945_2022, "Lec_06/2_data_wrangling_3/data/gdp_1945_2002.csv")
+
+# Save to a .rds file
+saveRDS(d_gdp_1945_2022, "Lec_06/2_data_wrangling_3/data/gdp_1945_2002.rds")
+```
+
+## Saving Your Outputs after Data Wrangling
+
+You can re-load saved `.csv` and `.rds` files using `read_csv` and `readRDS` respectively
+
+```{r}
+# Read a .csv file
+d_read_1 <- read_csv("Lec_06/2_data_wrangling_3/data/gdp_1945_2002.csv")
+
+# Read a .rds file
+d_read_2 <- readRDS("Lec_06/2_data_wrangling_3/data/gdp_1945_2002.rds")
+```
+
+## Comparison: .csv vs .rds
+
++--------+----------------------------------------------------------+------------------------------------------------------------------------------------------+---------------------------------------------------------+
+| Type   | Pro                                                      | Con                                                                                      | When?                                                   |
++========+==========================================================+==========================================================================================+=========================================================+
+| `.csv` | -   Readable outside R                                   | -   Variable types may change when you read it back if you do not carefully specify them | -   Simple data types                                   |
+|        |                                                          |                                                                                          |                                                         |
+|        | -   Conveniently convertible to Excel files              | -   Error-prone with *text* data (encoding, line breaks etc.)                            | -   Want to manually examine it outside R (e.g., Excel) |
+|        |                                                          |                                                                                          |                                                         |
+|        |                                                          | -   (Maybe) takes longer to read                                                         | -   Want to share it with non-R users                   |
++--------+----------------------------------------------------------+------------------------------------------------------------------------------------------+---------------------------------------------------------+
+| `.rds` | -   **Replicable**: Get precisely how the data are saved | -   Can't read `.rds` outside R                                                          | -   Complex combination of data types                   |
+|        |                                                          |                                                                                          |                                                         |
+|        | -   Smaller files (if stick with default compression)    |                                                                                          | -   Simply saving for your future use in R              |
+|        |                                                          |                                                                                          |                                                         |
+|        | -   (Sometimes) faster read/write                        |                                                                                          | -   Large dataset and you want to save space            |
+|        |                                                          |                                                                                          |                                                         |
+|        |                                                          |                                                                                          | -   Text data                                           |
+|        |                                                          |                                                                                          |                                                         |
+|        |                                                          |                                                                                          | -   **Always safer**                                    |
++--------+----------------------------------------------------------+------------------------------------------------------------------------------------------+---------------------------------------------------------+
