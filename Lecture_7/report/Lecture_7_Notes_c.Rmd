@@ -1,0 +1,198 @@
+---
+title: "Lecture 7 Notes Data Visualisation & Correlation"
+author: "Wong Nicole"
+date: "2023-10-26"
+output: html_document
+---
+
+## Load Data
+
+```{r}
+library(tidyverse)
+theme_set(theme_bw()) # Set my default theme for the whole document
+d <- readRDS("Lecture_7/data/wealth_and_health.rds")
+d |> print(n = 3)
+```
+
+## Summary Statistics: Pearson Correlation
+
+Pearson correlation (aka. Pearson\'s *r*), ranging from -1 to 1, is our typical indicator of the correlation between two quantitative variables.
+
+To use Pearson correlation, the two variables should meet the following assumptions:
+
+-   Continuous
+
+-   Linear relationship
+
+-   No outlier
+
+-   Normally distributed
+
+```{r}
+cor(d$life_expectancy, d$gdppc, use = "complete.obs", method = "pearson")
+```
+
+```{r}
+cor.test(d$life_expectancy, d$gdppc, use = "complete.obs", method = "pearson")
+```
+
+## Summary Statistics: Spearman Correlation
+
+If the data seem to break at least one of the assumptions for Pearson correlation, you may use Spearman correlation (aka. Spearman\'s *ρ*).
+
+-   Just specify the method as spearman
+
+-   X calculate the values between all actual values
+
+    -   instead ranks both variables and calculate the correlation between ranked items
+
+    -   e.g. All ranked highest in XXX have high correlation between ranked highest in YYY
+
+```{r}
+cor(d$life_expectancy, d$gdppc, use = "complete.obs", method = "spearman")
+```
+
+```{r}
+cor.test(d$life_expectancy, d$gdppc, use = "complete.obs", method = "spearman")
+```
+
+## Quant x3
+
+-   Correlation Matrix
+
+-   Bubble Plot: 3rd variable visualized with size
+
+-   Make it colorful: 3rd variable visualized with color
+
+```{r}
+library(GGally)
+d |>
+  select(gdppc, life_expectancy, population) |>
+  ggpairs()
+```
+
+```{r}
+# correlation matrix
+d |> select(gdppc, life_expectancy, population) |>
+  ggpairs(
+    columnLabels = c("GDP per capita", "Life Expectancy", "Population"), # Label variables
+    upper = list(continuous = wrap("cor", method = "spearman", color = "blue")), # Upper triangle: Spearman correlation
+    diag = list(continuous = wrap("barDiag", bins = 30, fill = "white", color = "black")), # Diagnal: histogram
+    lower = list(continuous = wrap("smooth", alpha = 0.1, color = "gray"))) # Lower triag: + linear trend line
+```
+
+```{r}
+# correlation matrix
+d |> select(gdppc, life_expectancy, population) |>
+  ggpairs(
+    columnLabels = c("GDP per capita", "Life Expectancy", "Population"), # Label variables
+    upper = list(continuous = wrap("cor", method = "spearman", color = "blue")), # Upper triangle: Spearman correlation
+    diag = list(continuous = wrap("barDiag", bins = 30, fill = "white", color = "black")), # Diagnal: histogram
+    lower = list(continuous = wrap("smooth_loess", alpha = 0.1, color = "gray"))) # Lower triag: + loess trend line
+```
+
+### Transformation
+
+-   If the variable is skewed, consider transformation to better visualise the data
+
+```{r}
+summary(d$population) # The population variable is skewed. Consider transofmration
+```
+
+```{r}
+d |> select(gdppc, life_expectancy, population) |>
+  mutate(population = log(population)) |> # log transformation
+  ggpairs(
+    columnLabels = c("GDP per capita", "Life Expectancy", "log(Population)"), # Label variables
+    upper = list(continuous = wrap("cor", method = "spearman", color = "blue")), # Upper triangle: Spearman correlation
+    diag = list(continuous = wrap("barDiag", bins = 30, fill = "white", color = "black")), # Diagnal: histogram
+    lower = list(continuous = wrap("smooth_loess", alpha = 0.1, color = "gray"))) # Lower triag: + loess trend line
+```
+
+## Bubble Plot
+
+```{r}
+d |> 
+  filter(year == 2019) |>
+  ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(size = population)) +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (2019)")
+```
+
+```{r}
+# customized
+d |> 
+  filter(year == 2019) |>
+  ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(size = population), alpha = 0.3) +
+  labs(x = "GDP per capita", y = "Life Expectancy", size = "Population",
+       title = "Wealth and Health in the World (2019)")
+```
+
+```{r}
+# annotated
+d_anno_pop <- d |> filter(year == 2019) |> slice_max(order_by = population, n = 10)
+
+d |> 
+  filter(year == 2019) |>
+  ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(size = population), alpha = 0.3) +
+  geom_text(data = d_anno_pop, aes(x = gdppc, y = life_expectancy, label = country_text_id, size = population)) +
+  labs(x = "GDP per capita", y = "Life Expectancy", size = "Population",
+       title = "Wealth and Health in the World (2019)",
+       caption = "Note: World's top 10 most populated countries are annotated.") +
+  theme(legend.position = "none") # Remove the legend
+```
+
+```{r}
+# make it colourful
+d |> 
+  filter(year == 2019) |>
+  ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(size = population, color = population), alpha = 0.3) +
+  labs(x = "GDP per capita", y = "Life Expectancy", 
+       size = "Population", color = "Population", fill = "Population",
+       title = "Wealth and Health in the World (2019)")
+```
+
+```{r}
+# make it colourful x2
+d |> 
+  filter(year == 2019) |>
+  ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(size = population, color = population), alpha = 0.3) +
+  scale_color_viridis_c(option = "A", trans = "log", direction = -1) +
+  labs(x = "GDP per capita", y = "Life Expectancy", 
+       size = "Population", color = "Population", fill = "Population",
+       title = "Wealth and Health in the World (2019)")
+```
+
+## Quant. X 4+?
+
+It is *technically* feasible to plot more than 3 variables in the same figure, but...
+
+-   You don\'t want your figure to be too \"busy\"
+
+-   \"Less is more\" 😢
+
+```{r}
+# use colour to show infant mortality
+d |> 
+  filter(year == 2019) |>
+  ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(size = population, color = infant_mortality), alpha = 0.3) +
+  scale_color_viridis_c(option = "A") +
+  labs(x = "GDP per capita", y = "Life Expectancy", 
+       size = "Population", color = "Infant Mortality",
+       title = "Wealth and Health in the World (2019)")
+```
+
+```{r}
+d |> filter(year == 2019) |>select(gdppc, life_expectancy, population, infant_mortality) |>
+  mutate(population = log(population)) |>
+  ggpairs(
+    columnLabels = c("GDP per capita", "Life Expectancy", "log(Population)", "Infant Mortality"), # Label variables
+    upper = list(continuous = wrap("cor", method = "spearman", color = "blue")),
+    diag = list(continuous = wrap("barDiag", bins = 30, fill = "white", color = "black")), 
+    lower = list(continuous = wrap("smooth_loess", alpha = 0.3, color = "gray")))
+```

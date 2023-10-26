@@ -72,7 +72,7 @@ d <- d_full |>
 ```
 
 ```{r}
-#change the second field based on location
+#save data locally
 saveRDS(d, "Lecture_7/data/wealth_and_health.rds")
 ```
 
@@ -104,6 +104,8 @@ unique(d_pop_overlap$year)
 cor(d_pop_overlap$population_ClioInfra, d_pop_overlap$population_WorldBank)
 ```
 
+-   As the correlation is quite high, we can confidently aggregate the data sets
+
 ### Set a rule to merge both population columns
 
 -   Different units: Divide `population_WorldBank` by 1000 (so that the unit of population is \"in thousands\"
@@ -134,6 +136,8 @@ d <- d |> rowwise() |>
 # STEP 2 Method 2: Faster but use a non-tidyverse function rowMeans() 
 # and create a temporary vector tmp_population, which I remove after use with rm()
 # [Faster !Recommended!]
+# row mean can quickly get the mean of each row
+# row mean is faster as it does not look through all the columns, but uses matrix operations that speeds up the operations
 tmp_population <- d |> select(population_ClioInfra, population_WorldBank) |> rowMeans(na.rm = TRUE)
 d <- d |> mutate(population = !!(tmp_population), .after = population_WorldBank)
 
@@ -144,3 +148,112 @@ rm(tmp_population)
 # Remove the columns we no longer need
 d <- d |> select(-population_ClioInfra, -population_WorldBank)
 ```
+
+```{r}
+#sanity check
+summary(d %>% select(-country_text_id, -year, -region))
+```
+
+## Check for data availability
+
+```{r}
+check_data_available <- d |> 
+  mutate(Available = (!is.na(life_expectancy) & !is.na(gdppc) & !is.na(population))) 
+# Check number of missing values by country-year
+table(check_data_available$Available, useNA = "always")
+```
+
+```{r}
+check_data_available |> print(n = 3)
+```
+
+```{r}
+# wide
+# check for country
+check_data_available_wide <- check_data_available |>
+  select(country_text_id, year, Available) |>
+  pivot_wider(names_from = "country_text_id", values_from = "Available", 
+              names_prefix = "c_") |>
+  arrange(year)
+
+check_data_available_wide |> print(n = 3)
+```
+
+```{r}
+# Check, for each year, the availability of each column
+check_data_available_by_column <- d |>
+  group_by(year) |>
+  summarise(
+    life_expectancy = sum(is.na(life_expectancy)),
+    gdppc = sum(is.na(gdppc)),
+    population = sum(is.na(population))
+  )
+  # summarise_at(vars(life_expectancy, gdppc, population), ~sum(!is.na(.))) 
+  # above is an alternative way to write the summarise() step
+
+check_data_available_by_column |> print(n = 3)
+```
+
+## Save cleaned data
+
+```{r}
+saveRDS(d, "Lecture_7/data/wealth_and_health.rds")
+```
+
+# Data Viz Basics :)
+
+## Scatter plot (Simple)
+
+```{r}
+# x = GDP
+# y = life expectancy
+# plot ALL data points
+d |> 
+  ggplot(aes(x = gdppc, y = life_expectancy)) + 
+  geom_point() +
+  labs(x = "GDP per capita", y = "Life Expectancy", 
+       title = "Wealth and Health in the World (1800-2019)",
+       caption = "Demo :)")
+```
+
+### Store your graph
+
+```{r}
+# Store in R environment (temporary)
+p_all <- d |> 
+  ggplot(aes(x = gdppc, y = life_expectancy)) + 
+  geom_point() +
+  labs(x = "GDP per capita", y = "Life Expectancy", 
+       title = "Wealth and Health in the World (1800-2019)",
+       caption = "Demo)
+```
+
+```{r}
+# Save plot as a .rds file in your folder
+# aka, save as an R object
+#dir.create("Lecture_7/data visualisations/figures")
+saveRDS(p_all, "Lecture_7/data visualisations/figures/welath_and_health_all.rds")
+```
+
+```{r}
+# Save plot as a PDF file in your folder
+# More popular
+ggsave(filename = "Lecture_7/data visualisations/figures/welath_and_health_all.pdf", 
+       plot = p_all, width = 9, height = 4)
+```
+
+### Set themes
+
+```{r}
+p_all + theme_bw()
+```
+
+Other themes include:
+
+-   `theme_classic()`
+
+-   `theme_minimal()`
+
+-   `theme_economist()`
+
+-   `theme_wsj()`

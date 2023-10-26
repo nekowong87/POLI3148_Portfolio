@@ -1,0 +1,361 @@
+---
+title: "Lecture 7 Notes Data Visualisation with ggplot"
+author: "Wong Nicole"
+date: "2023-10-26"
+output: html_document
+---
+
+## Load Data
+
+```{r}
+library(tidyverse)
+theme_set(theme_bw()) # Set my default theme for the whole document
+```
+
+```{r}
+d <- readRDS("Lecture_7/data/wealth_and_health.rds")
+d |> print(n = 3)
+```
+
+## `ggplot` syntax
+
+-   Consider: \"Painting\" your data on a canvas, layer by layer
+
+-   Steps
+
+    -   Specify the data you want to viaulize
+
+    -   Specify the type(s) of visualization tools
+
+    -   Label the figure (titles of the figure, axes, and legends)
+
+-   Command: Use **`+`** to connect layers (ATTENTION: not `|>` )
+
+```{r}
+d |> # Specify the data frame to plot
+  ggplot(aes(x = gdppc, y = life_expectancy)) + # Specify the variables to plot
+  geom_point() + # Choose the visualization tool: point; if you do not include step -> empty
+  labs(x = "GDP per capita", y = "Life Expectancy", # set up the axes' titles
+       title = "Wealth and Health in the World (1800-2019)", # set up the figure's title
+       caption = "By Haohan Chen. Data source: V-Dem v.13") # set up footnote
+```
+
+## Variable Types
+
+Visualization tools to use largely depends on variable types
+
+-   \"Quantitative\" (Continuous, Count, numeric)
+
+    -   GDP per capita
+
+    -   Life expectancy
+
+    -   Population
+
+    -   Infant mortality
+
+-   Categorical
+
+    -   Binary: Binary \"democracy\" indicator
+
+    -   Nominal: Region
+
+    -   Ordinal: Lexical Index of Electoral Democracy
+
+### Quant x1
+
+#### Summary Statistics
+
+```{r}
+summary(d$gdppc) # Quick summary
+```
+
+```{r}
+length(d$gdppc) # Number of observations
+```
+
+```{r}
+is.na(d$gdppc) |> sum() # Number of missing values
+```
+
+```{r}
+mean(d$gdppc, na.rm = TRUE) # Mean
+```
+
+```{r}
+var(d$gdppc, na.rm = TRUE) # Variance
+```
+
+```{r}
+sd(d$gdppc, na.rm = TRUE) # Standard deviation
+```
+
+```{r}
+quantile(d$gdppc, na.rm = TRUE) # Quantile
+```
+
+```{r}
+
+quantile(d$gdppc, seq(0, 1, 0.1), na.rm = TRUE) # Quintile
+```
+
+#### Histogram
+
+```{r}
+d |> 
+  ggplot(aes(x = gdppc)) +
+  geom_histogram() + # Draw a histogram
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+# number of bins
+# default = 30 bins (or bars)
+d |> ggplot(aes(x = gdppc)) + geom_histogram(bins = 10) +
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+# color
+d |> ggplot(aes(x = gdppc)) + geom_histogram(bins = 50, fill = "blue", color = "red") +
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+### Density
+
+```{r}
+d |> 
+  ggplot(aes(x = gdppc)) +
+  geom_density() + # Draw a density plot
+  labs(x = "GDP per capita", y = "Density", title = "Density of GDP per capita")
+```
+
+```{r}
+# color to view area (shown in gray for e.g.)
+d |> 
+  ggplot(aes(x = gdppc)) +
+  geom_density(fill = "gray", color = "red") + # Draw a density plot
+  labs(x = "GDP per capita", y = "Density", title = "Density of GDP per capita")
+```
+
+### Skewed distribution
+
+-   **Challenge:** Quantitative data may have skewed distributions, which can make the visualization uninformative.
+
+-   **Solution:**
+
+    -   Re-scale the axes
+
+    -   Transform the variable(s)
+
+#### Re-scale the axes
+
+```{r}
+d |> ggplot(aes(x = gdppc)) + geom_histogram() +
+  scale_x_sqrt() + # Scale the x axis to make distribution easy to read
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc)) + geom_histogram() +
+  scale_x_log10() + # Scale the x axis to make distribution easy to read
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+#### Transform the variables
+
+```{r}
+d |> mutate(gdppc_sqrt = sqrt(gdppc)) |> # Transform the variable before visualization
+  ggplot(aes(x = gdppc_sqrt)) + geom_histogram() +
+  labs(x = "sqrt(GDP per capita)", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+d |> mutate(gdppc_log = log(gdppc)) |> # Transform the variable before visualization
+  ggplot(aes(x = gdppc_log)) + geom_histogram() +
+  labs(x = "log(GDP per capita)", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+#method only works with non negative-values
+summary(d$gdppc)
+```
+
+### Annotating cases of interest
+
+```{r}
+d |> ggplot(aes(x = gdppc)) + geom_histogram() +
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+d_anno <- d |> filter(country_text_id == "CHN", year == 2019) |> mutate(anno = paste(country_text_id, year), .after = year)
+print(d_anno)
+```
+
+```{r}
+# A "manual" approach
+d |> ggplot(aes(x = gdppc)) + geom_histogram() + 
+  geom_vline(aes(xintercept = 15.4), linetype = "dashed", color = "red") +
+  annotate("text", x = 15.4, y = 7500, hjust = 0, label = "China 2019", color = "red") +
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+# An automated approach
+d |> ggplot(aes(x = gdppc)) + geom_histogram() + 
+  geom_vline(data = d_anno, aes(xintercept = gdppc), linetype = "dashed", color = "red") +
+  geom_text(data = d_anno, aes(x = gdppc, y = 7500, label = anno), hjust = 0, color = "red") +
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+The autonated approach can be useful for making multiple annotations
+
+```{r}
+d_anno <- d |> filter(country_text_id %in% c("CHN", "JPN", "USA"), year == 2019) |> 
+  mutate(anno = paste(country_text_id, year), .after = year)
+print(d_anno)
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc)) + geom_histogram() + 
+  geom_vline(data = d_anno, aes(xintercept = gdppc), linetype = "dashed", color = "red") +
+  geom_text(data = d_anno, aes(x = gdppc, y = 7500, label = anno), hjust = 0, color = "red") +
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+```{r}
+# also works for density graphs
+d |> ggplot(aes(x = gdppc)) + 
+  geom_density() + 
+  geom_vline(data = d_anno, aes(xintercept = gdppc), linetype = "dashed", color = "red") +
+  geom_text(data = d_anno, aes(x = gdppc, y = 0.15, label = anno), hjust = 0, color = "red") +
+  labs(x = "GDP per capita", y = "Count", title = "Histogram of GDP per capita")
+```
+
+### Quan x2
+
+### Scatter Plot
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point() +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, color = "navy", shape = 3, size = 0.5, stroke = 1) +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+
+```
+
+```{r}
+# trend line
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, shape = 3, size = 0.5) +
+  geom_smooth() +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, shape = 3, size = 0.5) +
+  geom_smooth(se = FALSE, color = "red") +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, shape = 3, size = 0.5) +
+  geom_smooth(method = "lm") +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+#### Skewed Distribution: Re-scale Axes
+
+```{r}
+# more detailed than all data points being clustered on the left side
+# please add footnote that it is scaled to not mislead the audience
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, color = "navy", shape = 3, size = 0.5, stroke = 1) +
+  scale_x_log10() +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+### Skewed Distribution: Transform variables
+
+```{r}
+d |> 
+  mutate(gdppc_log = log(gdppc)) |>
+  ggplot(aes(x = gdppc_log, y = life_expectancy)) +
+  geom_point(alpha = 0.3, color = "navy", shape = 3, size = 0.5, stroke = 1) +
+  labs(x = "log(GDP per capita)", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+### Annotate Data Points: `geom_text/geom_label`
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, shape = 3, size = 0.5) +
+  geom_text(data = d_anno, aes(x = gdppc, y = life_expectancy, label = anno), color = "red", size = 2.5) +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+```{r}
+# includes background --> more clear?
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, shape = 3, size = 0.5) +
+  geom_label(data = d_anno, aes(x = gdppc, y = life_expectancy, label = anno), color = "red", size = 2.5) +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+
+```
+
+\*geom_text may have strange outputs/overlaps for multiple data points
+
+#### Annotate MANY Data Points: `geom_label_repel`
+
+```{r}
+library(ggrepel)
+d_anno_2 <- d |> filter(year >= 2010, country_text_id == "CHN") |> 
+  mutate(anno = paste(country_text_id, year), .after = year)
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(alpha = 0.3, shape = 3, size = 0.5) +
+  # geom_point(data = d_anno_2, aes(x = gdppc, y = life_expectancy), color = "red", size = 0.5) +
+  geom_label_repel(data = d_anno_2, aes(x = gdppc, y = life_expectancy, label = anno), 
+                   color = "red", size = 2, max.overlaps = 20) +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+## 2D "Histogram\"
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_bin_2d(bins = 80) +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_bin_2d(bins = 80) + scale_x_log10() +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+```{r}
+# colour! :)
+# scale_fill_viridis_c()
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_bin_2d(bins = 80) + scale_x_log10() +
+  scale_fill_viridis_c() +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_hex(bins = 80) + scale_x_log10() +
+  labs(x = "GDP per capita", y = "Life Expectancy", title = "Wealth and Health in the World (1800-2019)")
+```
