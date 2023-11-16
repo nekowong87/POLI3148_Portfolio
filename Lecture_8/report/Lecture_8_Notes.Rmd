@@ -1,0 +1,419 @@
+---
+title: "Lecture 8 Notes (One category)"
+author: "Wong Nicole"
+date: "2023-11-02"
+output: html_document
+---
+
+# Load Data
+
+```{r}
+library(tidyverse)
+theme_set(theme_bw()) # Set my default theme for the whole document
+
+d0 <- readRDS("Lecture_8/data/wealth_and_health.rds") # check that it exists in data file
+#d |> print(n = 3)
+```
+
+```{r}
+# quick summary
+summary(d0$region)
+```
+
+```{r}
+d <- d0 |>
+  mutate(
+    region = case_match(
+      region,
+      1 ~ "Western Europe", 2 ~ "Northern Europe", 3 ~ "Southern Europe",
+      4 ~ "Eastern Europe", 5 ~ "Northern Africa", 6 ~ "Western Africa",
+      7 ~ "Middle Africa", 8 ~ "Eastern Africa", 9 ~ "Southern Africa",
+      10 ~ "Western Asia", 11 ~ "Central Asia", 12 ~ "Eastern Asia",
+      13 ~ "South-Eastern Asia", 14 ~ "Southern Asia", 15 ~ "Oceania",
+      16 ~ "North America", 17 ~ "Central America", 18 ~ "South America", 19 ~ "Caribbean",
+      .default = NA))
+```
+
+# 1 Categorical Variable
+
+## Summary
+
+```{r}
+# no. of observations
+length(d$region)
+```
+
+```{r}
+# no. of missing variables
+is.na(d$region) |> sum()
+```
+
+```{r}
+table(d$region, useNA = "always")
+```
+
+```{r}
+table(d$region, useNA = "always") |> prop.table()
+```
+
+## Bar Charts
+
+```{r}
+# vertical plots
+# use theme to adjust the labels (prevent overlapping)
+d |> ggplot(aes(x = region)) + geom_bar() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 0, vjust = 0)) +
+  labs(x = "Region", y = "Count", title = "N. Country-Year by Region")
+```
+
+```{r}
+# horizontal plots
+d |> ggplot(aes(x = region)) + geom_bar() +
+  coord_flip() +
+  labs(x = "Region", y = "Count", title = "N. Country-Year by Region")
+```
+
+## Ordered Bar Charts
+
+Order by frequency
+
+-   Use `fct_infreq` for descending order
+
+-   Use `fct_rev` for ascending order
+
+```{r}
+# ordered bar charts
+d |> ggplot(aes(x = fct_infreq(region))) + geom_bar() + #desc. order
+  #ggplot(aes(x = fct_rev(fct_infreq(region)))) + geom_bar() + #asc. order
+  theme(axis.text.x = element_text(angle = 90, hjust = 0, vjust = 0)) +
+  labs(x = "Region", y = "Count", title = "N. Country-Year by Region")
+```
+
+Custom orders (consistency)
+
+```{r}
+#define fixed orders
+region_levels <- c(
+  "Western Europe", "Northern Europe", "Southern Europe", "Eastern Europe",
+  "Northern Africa", "Western Africa", "Middle Africa", "Eastern Africa", "Southern Africa",
+  "Western Asia", "Central Asia", "Eastern Asia", "South-Eastern Asia", "Southern Asia",
+  "Oceania", 
+  "North America", "Central America", "South America", "Caribbean")
+
+d |>
+  mutate(region = factor(region, levels = region_levels)) |>
+  ggplot(aes(x = region)) + geom_bar() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 0, vjust = 0)) +
+  labs(x = "Region", y = "Count", title = "N. Country-Year by Region")
+```
+
+## Calculate frequency \*
+
+In all the previous examples, we let `ggplot` calculate the frequency for us. To allow for more customization, a better way is to calculate the frequencies manually before using `geom_bar`.
+
+```{r}
+d |> group_by(region) |> summarise(n_obs = n())
+```
+
+```{r}
+
+# ordered by n_obs (descending order)
+
+d |> group_by(region) |> summarise(n_obs = n()) |>
+  ggplot(aes(x = reorder(region, -n_obs), y = n_obs)) + geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 0, vjust = 0)) +
+  labs(x = "Region", y = "Count", title = "N. Country-Year by Region")  
+```
+
+## Re-categorize
+
+Sometimes there may be too many categories. You can re-categorize (e.g. from regions to continents, labelled as region_higher)
+
+```{r}
+d <- d |>
+  mutate(region_higher = case_match(
+    region,
+    c("Western Europe", "Northern Europe", "Southern Europe", "Eastern Europe") ~ "Europe",
+    c("Northern Africa", "Western Africa", "Middle Africa", "Eastern Africa", "Southern Africa") ~ "Africa",
+    c("Western Asia", "Central Asia", "Eastern Asia", "South-Eastern Asia", "Southern Asia") ~ "Asia",
+    c("Central America", "South America", "Caribbean") ~ "Latin America",
+    .default = region), .before = region)
+
+table(d$region_higher)
+```
+
+```{r}
+d |> group_by(region_higher) |> summarise(n_obs = n()) |>
+  ggplot(aes(y = reorder(region_higher, n_obs), x = n_obs)) + geom_bar(stat = "identity") +
+  labs(y = "Region", x = "Count", title = "N. Country-Year by Region")  
+```
+
+## Adding a Second Variable
+
+### Stacked
+
+We can use a stacked bar chart
+
+-   use `fill = factor(variable x)` as demoncracy_binary is a binary variable
+
+```{r}
+table(d$region_higher)
+```
+
+```{r}
+# stacked bar chart
+d |> group_by(region_higher, democracy_binary) |> summarise(n_obs = n()) |>
+  ggplot(aes(x = n_obs, y = region_higher, fill = factor(democracy_binary))) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "Region", x = "Count", title = "N. Country-Year by Region and Regime Type", fill = "Democracy")  
+```
+
+Alternatively, we can change 0, 1, NA to meaningful names
+
+-   Mutate to change binary from 1/0/ to Yes/No
+
+```{r}
+# stacked bar chart with renamed binary
+d |> group_by(region_higher, democracy_binary) |> summarise(n_obs = n()) |>
+  mutate(democracy_binary = case_match(democracy_binary, 1 ~ "Yes", 0 ~ "No", NA ~ NA)) |>
+  ggplot(aes(x = n_obs, y = region_higher, fill = democracy_binary)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "Region", x = "Count", title = "N. Country-Year by Region and Regime Type", fill = "Democracy")
+```
+
+### Stacked + poportion
+
+100% stacked bar charts can be used to visualize proportion (of democracy in each geographic region)
+
+```{r}
+d |> group_by(region_higher, democracy_binary) |> summarise(n_obs = n()) |>
+  mutate(democracy_binary = case_match(democracy_binary, 1 ~ "Yes", 0 ~ "No", NA ~ NA)) |>
+  group_by(region_higher) |> mutate(prop_obs = n_obs / sum(n_obs) * 100) |> # Calculate proportion
+  ggplot(aes(x = prop_obs, y = region_higher, fill = democracy_binary)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "Region", x = "Percentage (%)", title = "N. Country-Year by Region and Regime Type", fill = "Democracy")
+
+```
+
+```{r}
+# with annotation
+d |> group_by(region_higher, democracy_binary) |> summarise(n_obs = n()) |>
+  mutate(democracy_binary = case_match(democracy_binary, 1 ~ "Yes", 0 ~ "No", NA ~ NA)) |>
+  group_by(region_higher) |> mutate(prop_obs = n_obs / sum(n_obs) * 100) |>
+  ggplot(aes(x = prop_obs, y = region_higher, fill = democracy_binary)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = n_obs), position = position_stack(vjust = 0.5), size = 2) +
+  labs(y = "Region", x = "Proportion", title = "N. Country-Year by Region and Regime Type", fill = "Democracy")
+
+```
+
+# 1 cat. + 1 quant.
+
+## Box Plots
+
+-   use `coord_flip()` to flip the chart
+
+```{r}
+# plot verticle box graphs
+d |> ggplot(aes(x = region_higher, y = life_expectancy)) + 
+  geom_boxplot() + coord_flip() +
+  labs(title = "Life Expectancy by Region", x = "Region", y = "Life Expectancy")
+```
+
+```{r}
+# ordered by median
+d |> 
+  filter(!is.na(life_expectancy)) |> # Remove entries whose life_expectancy is NA
+  ggplot(aes(x = fct_reorder(region_higher, life_expectancy, .fun=median, .desc = FALSE), y = life_expectancy)) + 
+  geom_boxplot() + coord_flip() +
+  labs(title = "Life Expectancy by Region", x = "Region", y = "Life Expectancy")
+```
+
+-   use `geom_jitter()` to add data points
+
+```{r}
+# show data points
+d |> 
+  filter(!is.na(life_expectancy)) |> # Remove entries whose life_expectancy is NA. Essential for the reordering to work!
+  ggplot(aes(x = fct_reorder(region_higher, life_expectancy, .fun=median, .desc = FALSE), y = life_expectancy)) + 
+  geom_boxplot() + geom_jitter(position = position_jitter(0.3), alpha = 0.1) + # geom_jitter() does the trick.
+  coord_flip() + labs(title = "Life Expectancy by Region", x = "Region", y = "Life Expectancy")
+```
+
+## Violin Plot
+
+```{r}
+d |> 
+  filter(!is.na(life_expectancy)) |> # Remove entries whose life_expectancy is NA
+  ggplot(aes(x = fct_reorder(region_higher, life_expectancy, .fun=median, .desc = FALSE), y = life_expectancy)) + 
+  geom_violin() +
+  coord_flip() + labs(title = "Life Expectancy by Region", x = "Region", y = "Life Expectancy")
+```
+
+```{r}
+# combine violin plot with box plot
+d |> 
+  filter(!is.na(life_expectancy)) |> # Remove entries whose life_expectancy is NA
+  ggplot(aes(x = fct_reorder(region_higher, life_expectancy, .fun=median, .desc = FALSE), y = life_expectancy)) + 
+  geom_violin() + geom_boxplot(width = 0.15, fill = "grey") + # Note: Place geom_boxplot after geom_violin.
+  coord_flip() + labs(title = "Life Expectancy by Region", x = "Region", y = "Life Expectancy")
+```
+
+## Colored Histogram
+
+```{r}
+d |>
+  ggplot(aes(x = life_expectancy, fill = region_higher)) +
+  geom_histogram(bins = 50) + 
+  labs(title = "Life Expectancy by Region", fill = "Region", x = "Life Expectancy") +
+  theme(legend.position = "bottom")
+```
+
+## Colored Frequency Polygon
+
+```{r}
+d |>
+  ggplot(aes(x = life_expectancy, color = region_higher)) +
+  geom_freqpoly(bins = 50) + 
+  labs(title = "Life Expectancy by Region", fill = "Region", x = "Life Expectancy") +
+  theme(legend.position = "bottom")
+```
+
+## Colored Density
+
+```{r}
+d |>
+  ggplot(aes(x = life_expectancy, fill = region_higher)) +
+  geom_density(alpha = 0.2) + 
+  labs(title = "Life Expectancy by Region", fill = "Region", x = "Life Expectancy") +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+# alternative design
+d |>
+  ggplot(aes(x = life_expectancy, fill = NULL, color = region_higher)) +
+  geom_density() + 
+  labs(title = "Life Expectancy by Region", color = "Region", x = "Life Expectancy") +
+  theme(legend.position = "bottom")
+```
+
+## Facets
+
+Does your figure look too "busy"? Separate them into different sub-figures!
+
+```{r}
+# columns or rows
+d |>
+  ggplot(aes(x = life_expectancy, fill = NULL)) +
+  geom_density() + 
+  labs(title = "Life Expectancy by Region", color = "Region", x = "Life Expectancy") +
+  theme(legend.position = "bottom") +
+  facet_grid(cols = vars(region_higher))
+  #facet_grid(rows = vars(region_higher))
+```
+
+```{r}
+# flexible
+d |>
+  ggplot(aes(x = life_expectancy, fill = NULL)) +
+  geom_density() + 
+  labs(title = "Life Expectancy by Region", color = "Region", x = "Life Expectancy") +
+  theme(legend.position = "bottom") +
+  facet_wrap(~region_higher, nrow = 2)
+```
+
+# 1 cat. + 2 quant.
+
+## Scatter Plot
+
+Change colour based on region
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(color = region_higher), alpha = 0.3, shape = 3, size = 0.5, stroke = 1) +
+  labs(x = "GDP per capita", y = "Life Expectancy", color = "Region",
+       title = "Wealth and Health in the World (1800-2019)")
+```
+
+Change shape based on region (may be difficult to view :) )
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(shape = region_higher), alpha = 0.3, size = 0.5, stroke = 1) +
+  labs(x = "GDP per capita", y = "Life Expectancy", shape = "Region",
+       title = "Wealth and Health in the World (1800-2019)")
+```
+
+Or both
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(shape = region_higher, color = region_higher), alpha = 0.3, size = 0.5, stroke = 1) +
+  labs(x = "GDP per capita", y = "Life Expectancy", color = "Region", shape = "Region",
+       title = "Wealth and Health in the World (1800-2019)")
+```
+
+Add trend lines
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(shape = region_higher, color = region_higher), alpha = 0.3, size = 0.5, stroke = 1) +
+  geom_smooth(aes(color = region_higher)) +
+  labs(x = "GDP per capita", y = "Life Expectancy", color = "Region", shape = "Region",
+       title = "Wealth and Health in the World (1800-2019)")
+```
+
+### Facets 🌈🌈🌈
+
+```{r}
+d |> ggplot(aes(x = gdppc, y = life_expectancy)) +
+  geom_point(aes(shape = region_higher, color = region_higher), alpha = 0.3, size = 0.5, stroke = 1) +
+  geom_smooth() +
+  labs(x = "GDP per capita", y = "Life Expectancy", color = "Region", shape = "Region",
+       title = "Wealth and Health in the World (1800-2019)") +
+  facet_wrap(~region_higher, nrow = 2, scales = "free") +
+  theme(legend.position = "none")
+```
+
+## Heatmap
+
+```{r}
+d |> filter(year >= 1984) |>
+  group_by(region_higher, year) |> summarise(life_expectancy_avg = mean(life_expectancy, na.rm = TRUE)) |> mutate(year = factor(year)) |>
+  ggplot(aes(x = year, y = region_higher, fill = life_expectancy_avg)) + geom_tile() +
+  theme(axis.text.x = element_text(angle = 45), legend.position = "bottom") +
+  labs(x = "Year", y = "Region", fill = "Life Expectancy", title = "Life Expectancy by Region-Year")
+```
+
+```{r}
+# colored heat map
+d |> filter(year >= 1984) |>
+  group_by(region_higher, year) |> summarise(life_expectancy_avg = mean(life_expectancy, na.rm = TRUE)) |> mutate(year = factor(year)) |>
+  ggplot(aes(x = year, y = region_higher, fill = life_expectancy_avg)) + geom_tile() +
+  theme(axis.text.x = element_text(angle = 45), legend.position = "bottom") +
+  scale_fill_viridis_c(option = "A", direction = 1) +
+  labs(x = "Year", y = "Region", fill = "Life Expectancy", title = "Life Expectancy by Region-Year")
+```
+
+## Facets: Density Plot Matrix `facet_grid`
+
+```{r}
+d |> filter(year %in% 2010:2020) |> ggplot(aes(x = life_expectancy)) + geom_density() +
+  facet_grid(cols = vars(region_higher), rows = vars(year)) +
+  labs(x = "Life Expectancy", y = "Density", title = "Life Expectancy by Region-Year (2010-2022)")
+```
+
+```{r}
+# free scales on x
+d |> filter(year %in% 2010:2020) |> ggplot(aes(x = life_expectancy)) + geom_density() +
+  facet_grid(cols = vars(region_higher), rows = vars(year), scales = "free_x") +
+  labs(x = "Life Expectancy", y = "Density", title = "Life Expectancy by Region-Year (2010-2022)")
+```
+
+```{r}
+# free scales on y
+d |> filter(year %in% 2010:2020) |> ggplot(aes(x = life_expectancy)) + geom_density() +
+  facet_grid(cols = vars(region_higher), rows = vars(year), scales = "free_y") +
+  labs(x = "Life Expectancy", y = "Density", title = "Life Expectancy by Region-Year (2010-2022)")
+```
