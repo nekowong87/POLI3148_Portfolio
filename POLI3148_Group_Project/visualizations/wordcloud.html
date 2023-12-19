@@ -1,0 +1,2252 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>wordcloud2</title>
+<script>(function() {
+  // If window.HTMLWidgets is already defined, then use it; otherwise create a
+  // new object. This allows preceding code to set options that affect the
+  // initialization process (though none currently exist).
+  window.HTMLWidgets = window.HTMLWidgets || {};
+
+  // See if we're running in a viewer pane. If not, we're in a web browser.
+  var viewerMode = window.HTMLWidgets.viewerMode =
+      /\bviewer_pane=1\b/.test(window.location);
+
+  // See if we're running in Shiny mode. If not, it's a static document.
+  // Note that static widgets can appear in both Shiny and static modes, but
+  // obviously, Shiny widgets can only appear in Shiny apps/documents.
+  var shinyMode = window.HTMLWidgets.shinyMode =
+      typeof(window.Shiny) !== "undefined" && !!window.Shiny.outputBindings;
+
+  // We can't count on jQuery being available, so we implement our own
+  // version if necessary.
+  function querySelectorAll(scope, selector) {
+    if (typeof(jQuery) !== "undefined" && scope instanceof jQuery) {
+      return scope.find(selector);
+    }
+    if (scope.querySelectorAll) {
+      return scope.querySelectorAll(selector);
+    }
+  }
+
+  function asArray(value) {
+    if (value === null)
+      return [];
+    if ($.isArray(value))
+      return value;
+    return [value];
+  }
+
+  // Implement jQuery's extend
+  function extend(target /*, ... */) {
+    if (arguments.length == 1) {
+      return target;
+    }
+    for (var i = 1; i < arguments.length; i++) {
+      var source = arguments[i];
+      for (var prop in source) {
+        if (source.hasOwnProperty(prop)) {
+          target[prop] = source[prop];
+        }
+      }
+    }
+    return target;
+  }
+
+  // IE8 doesn't support Array.forEach.
+  function forEach(values, callback, thisArg) {
+    if (values.forEach) {
+      values.forEach(callback, thisArg);
+    } else {
+      for (var i = 0; i < values.length; i++) {
+        callback.call(thisArg, values[i], i, values);
+      }
+    }
+  }
+
+  // Replaces the specified method with the return value of funcSource.
+  //
+  // Note that funcSource should not BE the new method, it should be a function
+  // that RETURNS the new method. funcSource receives a single argument that is
+  // the overridden method, it can be called from the new method. The overridden
+  // method can be called like a regular function, it has the target permanently
+  // bound to it so "this" will work correctly.
+  function overrideMethod(target, methodName, funcSource) {
+    var superFunc = target[methodName] || function() {};
+    var superFuncBound = function() {
+      return superFunc.apply(target, arguments);
+    };
+    target[methodName] = funcSource(superFuncBound);
+  }
+
+  // Add a method to delegator that, when invoked, calls
+  // delegatee.methodName. If there is no such method on
+  // the delegatee, but there was one on delegator before
+  // delegateMethod was called, then the original version
+  // is invoked instead.
+  // For example:
+  //
+  // var a = {
+  //   method1: function() { console.log('a1'); }
+  //   method2: function() { console.log('a2'); }
+  // };
+  // var b = {
+  //   method1: function() { console.log('b1'); }
+  // };
+  // delegateMethod(a, b, "method1");
+  // delegateMethod(a, b, "method2");
+  // a.method1();
+  // a.method2();
+  //
+  // The output would be "b1", "a2".
+  function delegateMethod(delegator, delegatee, methodName) {
+    var inherited = delegator[methodName];
+    delegator[methodName] = function() {
+      var target = delegatee;
+      var method = delegatee[methodName];
+
+      // The method doesn't exist on the delegatee. Instead,
+      // call the method on the delegator, if it exists.
+      if (!method) {
+        target = delegator;
+        method = inherited;
+      }
+
+      if (method) {
+        return method.apply(target, arguments);
+      }
+    };
+  }
+
+  // Implement a vague facsimilie of jQuery's data method
+  function elementData(el, name, value) {
+    if (arguments.length == 2) {
+      return el["htmlwidget_data_" + name];
+    } else if (arguments.length == 3) {
+      el["htmlwidget_data_" + name] = value;
+      return el;
+    } else {
+      throw new Error("Wrong number of arguments for elementData: " +
+        arguments.length);
+    }
+  }
+
+  // http://stackoverflow.com/questions/3446170/escape-string-for-use-in-javascript-regex
+  function escapeRegExp(str) {
+    return str.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
+  }
+
+  function hasClass(el, className) {
+    var re = new RegExp("\\b" + escapeRegExp(className) + "\\b");
+    return re.test(el.className);
+  }
+
+  // elements - array (or array-like object) of HTML elements
+  // className - class name to test for
+  // include - if true, only return elements with given className;
+  //   if false, only return elements *without* given className
+  function filterByClass(elements, className, include) {
+    var results = [];
+    for (var i = 0; i < elements.length; i++) {
+      if (hasClass(elements[i], className) == include)
+        results.push(elements[i]);
+    }
+    return results;
+  }
+
+  function on(obj, eventName, func) {
+    if (obj.addEventListener) {
+      obj.addEventListener(eventName, func, false);
+    } else if (obj.attachEvent) {
+      obj.attachEvent(eventName, func);
+    }
+  }
+
+  function off(obj, eventName, func) {
+    if (obj.removeEventListener)
+      obj.removeEventListener(eventName, func, false);
+    else if (obj.detachEvent) {
+      obj.detachEvent(eventName, func);
+    }
+  }
+
+  // Translate array of values to top/right/bottom/left, as usual with
+  // the "padding" CSS property
+  // https://developer.mozilla.org/en-US/docs/Web/CSS/padding
+  function unpackPadding(value) {
+    if (typeof(value) === "number")
+      value = [value];
+    if (value.length === 1) {
+      return {top: value[0], right: value[0], bottom: value[0], left: value[0]};
+    }
+    if (value.length === 2) {
+      return {top: value[0], right: value[1], bottom: value[0], left: value[1]};
+    }
+    if (value.length === 3) {
+      return {top: value[0], right: value[1], bottom: value[2], left: value[1]};
+    }
+    if (value.length === 4) {
+      return {top: value[0], right: value[1], bottom: value[2], left: value[3]};
+    }
+  }
+
+  // Convert an unpacked padding object to a CSS value
+  function paddingToCss(paddingObj) {
+    return paddingObj.top + "px " + paddingObj.right + "px " + paddingObj.bottom + "px " + paddingObj.left + "px";
+  }
+
+  // Makes a number suitable for CSS
+  function px(x) {
+    if (typeof(x) === "number")
+      return x + "px";
+    else
+      return x;
+  }
+
+  // Retrieves runtime widget sizing information for an element.
+  // The return value is either null, or an object with fill, padding,
+  // defaultWidth, defaultHeight fields.
+  function sizingPolicy(el) {
+    var sizingEl = document.querySelector("script[data-for='" + el.id + "'][type='application/htmlwidget-sizing']");
+    if (!sizingEl)
+      return null;
+    var sp = JSON.parse(sizingEl.textContent || sizingEl.text || "{}");
+    if (viewerMode) {
+      return sp.viewer;
+    } else {
+      return sp.browser;
+    }
+  }
+
+  // @param tasks Array of strings (or falsy value, in which case no-op).
+  //   Each element must be a valid JavaScript expression that yields a
+  //   function. Or, can be an array of objects with "code" and "data"
+  //   properties; in this case, the "code" property should be a string
+  //   of JS that's an expr that yields a function, and "data" should be
+  //   an object that will be added as an additional argument when that
+  //   function is called.
+  // @param target The object that will be "this" for each function
+  //   execution.
+  // @param args Array of arguments to be passed to the functions. (The
+  //   same arguments will be passed to all functions.)
+  function evalAndRun(tasks, target, args) {
+    if (tasks) {
+      forEach(tasks, function(task) {
+        var theseArgs = args;
+        if (typeof(task) === "object") {
+          theseArgs = theseArgs.concat([task.data]);
+          task = task.code;
+        }
+        var taskFunc = tryEval(task);
+        if (typeof(taskFunc) !== "function") {
+          throw new Error("Task must be a function! Source:\n" + task);
+        }
+        taskFunc.apply(target, theseArgs);
+      });
+    }
+  }
+
+  // Attempt eval() both with and without enclosing in parentheses.
+  // Note that enclosing coerces a function declaration into
+  // an expression that eval() can parse
+  // (otherwise, a SyntaxError is thrown)
+  function tryEval(code) {
+    var result = null;
+    try {
+      result = eval("(" + code + ")");
+    } catch(error) {
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
+      try {
+        result = eval(code);
+      } catch(e) {
+        if (e instanceof SyntaxError) {
+          throw error;
+        } else {
+          throw e;
+        }
+      }
+    }
+    return result;
+  }
+
+  function initSizing(el) {
+    var sizing = sizingPolicy(el);
+    if (!sizing)
+      return;
+
+    var cel = document.getElementById("htmlwidget_container");
+    if (!cel)
+      return;
+
+    if (typeof(sizing.padding) !== "undefined") {
+      document.body.style.margin = "0";
+      document.body.style.padding = paddingToCss(unpackPadding(sizing.padding));
+    }
+
+    if (sizing.fill) {
+      document.body.style.overflow = "hidden";
+      document.body.style.width = "100%";
+      document.body.style.height = "100%";
+      document.documentElement.style.width = "100%";
+      document.documentElement.style.height = "100%";
+      cel.style.position = "absolute";
+      var pad = unpackPadding(sizing.padding);
+      cel.style.top = pad.top + "px";
+      cel.style.right = pad.right + "px";
+      cel.style.bottom = pad.bottom + "px";
+      cel.style.left = pad.left + "px";
+      el.style.width = "100%";
+      el.style.height = "100%";
+
+      return {
+        getWidth: function() { return cel.getBoundingClientRect().width; },
+        getHeight: function() { return cel.getBoundingClientRect().height; }
+      };
+
+    } else {
+      el.style.width = px(sizing.width);
+      el.style.height = px(sizing.height);
+
+      return {
+        getWidth: function() { return cel.getBoundingClientRect().width; },
+        getHeight: function() { return cel.getBoundingClientRect().height; }
+      };
+    }
+  }
+
+  // Default implementations for methods
+  var defaults = {
+    find: function(scope) {
+      return querySelectorAll(scope, "." + this.name);
+    },
+    renderError: function(el, err) {
+      var $el = $(el);
+
+      this.clearError(el);
+
+      // Add all these error classes, as Shiny does
+      var errClass = "shiny-output-error";
+      if (err.type !== null) {
+        // use the classes of the error condition as CSS class names
+        errClass = errClass + " " + $.map(asArray(err.type), function(type) {
+          return errClass + "-" + type;
+        }).join(" ");
+      }
+      errClass = errClass + " htmlwidgets-error";
+
+      // Is el inline or block? If inline or inline-block, just display:none it
+      // and add an inline error.
+      var display = $el.css("display");
+      $el.data("restore-display-mode", display);
+
+      if (display === "inline" || display === "inline-block") {
+        $el.hide();
+        if (err.message !== "") {
+          var errorSpan = $("<span>").addClass(errClass);
+          errorSpan.text(err.message);
+          $el.after(errorSpan);
+        }
+      } else if (display === "block") {
+        // If block, add an error just after the el, set visibility:none on the
+        // el, and position the error to be on top of the el.
+        // Mark it with a unique ID and CSS class so we can remove it later.
+        $el.css("visibility", "hidden");
+        if (err.message !== "") {
+          var errorDiv = $("<div>").addClass(errClass).css("position", "absolute")
+            .css("top", el.offsetTop)
+            .css("left", el.offsetLeft)
+            // setting width can push out the page size, forcing otherwise
+            // unnecessary scrollbars to appear and making it impossible for
+            // the element to shrink; so use max-width instead
+            .css("maxWidth", el.offsetWidth)
+            .css("height", el.offsetHeight);
+          errorDiv.text(err.message);
+          $el.after(errorDiv);
+
+          // Really dumb way to keep the size/position of the error in sync with
+          // the parent element as the window is resized or whatever.
+          var intId = setInterval(function() {
+            if (!errorDiv[0].parentElement) {
+              clearInterval(intId);
+              return;
+            }
+            errorDiv
+              .css("top", el.offsetTop)
+              .css("left", el.offsetLeft)
+              .css("maxWidth", el.offsetWidth)
+              .css("height", el.offsetHeight);
+          }, 500);
+        }
+      }
+    },
+    clearError: function(el) {
+      var $el = $(el);
+      var display = $el.data("restore-display-mode");
+      $el.data("restore-display-mode", null);
+
+      if (display === "inline" || display === "inline-block") {
+        if (display)
+          $el.css("display", display);
+        $(el.nextSibling).filter(".htmlwidgets-error").remove();
+      } else if (display === "block"){
+        $el.css("visibility", "inherit");
+        $(el.nextSibling).filter(".htmlwidgets-error").remove();
+      }
+    },
+    sizing: {}
+  };
+
+  // Called by widget bindings to register a new type of widget. The definition
+  // object can contain the following properties:
+  // - name (required) - A string indicating the binding name, which will be
+  //   used by default as the CSS classname to look for.
+  // - initialize (optional) - A function(el) that will be called once per
+  //   widget element; if a value is returned, it will be passed as the third
+  //   value to renderValue.
+  // - renderValue (required) - A function(el, data, initValue) that will be
+  //   called with data. Static contexts will cause this to be called once per
+  //   element; Shiny apps will cause this to be called multiple times per
+  //   element, as the data changes.
+  window.HTMLWidgets.widget = function(definition) {
+    if (!definition.name) {
+      throw new Error("Widget must have a name");
+    }
+    if (!definition.type) {
+      throw new Error("Widget must have a type");
+    }
+    // Currently we only support output widgets
+    if (definition.type !== "output") {
+      throw new Error("Unrecognized widget type '" + definition.type + "'");
+    }
+    // TODO: Verify that .name is a valid CSS classname
+
+    // Support new-style instance-bound definitions. Old-style class-bound
+    // definitions have one widget "object" per widget per type/class of
+    // widget; the renderValue and resize methods on such widget objects
+    // take el and instance arguments, because the widget object can't
+    // store them. New-style instance-bound definitions have one widget
+    // object per widget instance; the definition that's passed in doesn't
+    // provide renderValue or resize methods at all, just the single method
+    //   factory(el, width, height)
+    // which returns an object that has renderValue(x) and resize(w, h).
+    // This enables a far more natural programming style for the widget
+    // author, who can store per-instance state using either OO-style
+    // instance fields or functional-style closure variables (I guess this
+    // is in contrast to what can only be called C-style pseudo-OO which is
+    // what we required before).
+    if (definition.factory) {
+      definition = createLegacyDefinitionAdapter(definition);
+    }
+
+    if (!definition.renderValue) {
+      throw new Error("Widget must have a renderValue function");
+    }
+
+    // For static rendering (non-Shiny), use a simple widget registration
+    // scheme. We also use this scheme for Shiny apps/documents that also
+    // contain static widgets.
+    window.HTMLWidgets.widgets = window.HTMLWidgets.widgets || [];
+    // Merge defaults into the definition; don't mutate the original definition.
+    var staticBinding = extend({}, defaults, definition);
+    overrideMethod(staticBinding, "find", function(superfunc) {
+      return function(scope) {
+        var results = superfunc(scope);
+        // Filter out Shiny outputs, we only want the static kind
+        return filterByClass(results, "html-widget-output", false);
+      };
+    });
+    window.HTMLWidgets.widgets.push(staticBinding);
+
+    if (shinyMode) {
+      // Shiny is running. Register the definition with an output binding.
+      // The definition itself will not be the output binding, instead
+      // we will make an output binding object that delegates to the
+      // definition. This is because we foolishly used the same method
+      // name (renderValue) for htmlwidgets definition and Shiny bindings
+      // but they actually have quite different semantics (the Shiny
+      // bindings receive data that includes lots of metadata that it
+      // strips off before calling htmlwidgets renderValue). We can't
+      // just ignore the difference because in some widgets it's helpful
+      // to call this.renderValue() from inside of resize(), and if
+      // we're not delegating, then that call will go to the Shiny
+      // version instead of the htmlwidgets version.
+
+      // Merge defaults with definition, without mutating either.
+      var bindingDef = extend({}, defaults, definition);
+
+      // This object will be our actual Shiny binding.
+      var shinyBinding = new Shiny.OutputBinding();
+
+      // With a few exceptions, we'll want to simply use the bindingDef's
+      // version of methods if they are available, otherwise fall back to
+      // Shiny's defaults. NOTE: If Shiny's output bindings gain additional
+      // methods in the future, and we want them to be overrideable by
+      // HTMLWidget binding definitions, then we'll need to add them to this
+      // list.
+      delegateMethod(shinyBinding, bindingDef, "getId");
+      delegateMethod(shinyBinding, bindingDef, "onValueChange");
+      delegateMethod(shinyBinding, bindingDef, "onValueError");
+      delegateMethod(shinyBinding, bindingDef, "renderError");
+      delegateMethod(shinyBinding, bindingDef, "clearError");
+      delegateMethod(shinyBinding, bindingDef, "showProgress");
+
+      // The find, renderValue, and resize are handled differently, because we
+      // want to actually decorate the behavior of the bindingDef methods.
+
+      shinyBinding.find = function(scope) {
+        var results = bindingDef.find(scope);
+
+        // Only return elements that are Shiny outputs, not static ones
+        var dynamicResults = results.filter(".html-widget-output");
+
+        // It's possible that whatever caused Shiny to think there might be
+        // new dynamic outputs, also caused there to be new static outputs.
+        // Since there might be lots of different htmlwidgets bindings, we
+        // schedule execution for later--no need to staticRender multiple
+        // times.
+        if (results.length !== dynamicResults.length)
+          scheduleStaticRender();
+
+        return dynamicResults;
+      };
+
+      // Wrap renderValue to handle initialization, which unfortunately isn't
+      // supported natively by Shiny at the time of this writing.
+
+      shinyBinding.renderValue = function(el, data) {
+        Shiny.renderDependencies(data.deps);
+        // Resolve strings marked as javascript literals to objects
+        if (!(data.evals instanceof Array)) data.evals = [data.evals];
+        for (var i = 0; data.evals && i < data.evals.length; i++) {
+          window.HTMLWidgets.evaluateStringMember(data.x, data.evals[i]);
+        }
+        if (!bindingDef.renderOnNullValue) {
+          if (data.x === null) {
+            el.style.visibility = "hidden";
+            return;
+          } else {
+            el.style.visibility = "inherit";
+          }
+        }
+        if (!elementData(el, "initialized")) {
+          initSizing(el);
+
+          elementData(el, "initialized", true);
+          if (bindingDef.initialize) {
+            var rect = el.getBoundingClientRect();
+            var result = bindingDef.initialize(el, rect.width, rect.height);
+            elementData(el, "init_result", result);
+          }
+        }
+        bindingDef.renderValue(el, data.x, elementData(el, "init_result"));
+        evalAndRun(data.jsHooks.render, elementData(el, "init_result"), [el, data.x]);
+      };
+
+      // Only override resize if bindingDef implements it
+      if (bindingDef.resize) {
+        shinyBinding.resize = function(el, width, height) {
+          // Shiny can call resize before initialize/renderValue have been
+          // called, which doesn't make sense for widgets.
+          if (elementData(el, "initialized")) {
+            bindingDef.resize(el, width, height, elementData(el, "init_result"));
+          }
+        };
+      }
+
+      Shiny.outputBindings.register(shinyBinding, bindingDef.name);
+    }
+  };
+
+  var scheduleStaticRenderTimerId = null;
+  function scheduleStaticRender() {
+    if (!scheduleStaticRenderTimerId) {
+      scheduleStaticRenderTimerId = setTimeout(function() {
+        scheduleStaticRenderTimerId = null;
+        window.HTMLWidgets.staticRender();
+      }, 1);
+    }
+  }
+
+  // Render static widgets after the document finishes loading
+  // Statically render all elements that are of this widget's class
+  window.HTMLWidgets.staticRender = function() {
+    var bindings = window.HTMLWidgets.widgets || [];
+    forEach(bindings, function(binding) {
+      var matches = binding.find(document.documentElement);
+      forEach(matches, function(el) {
+        var sizeObj = initSizing(el, binding);
+
+        var getSize = function(el) {
+          if (sizeObj) {
+            return {w: sizeObj.getWidth(), h: sizeObj.getHeight()}
+          } else {
+            var rect = el.getBoundingClientRect();
+            return {w: rect.width, h: rect.height}
+          }
+        };
+
+        if (hasClass(el, "html-widget-static-bound"))
+          return;
+        el.className = el.className + " html-widget-static-bound";
+
+        var initResult;
+        if (binding.initialize) {
+          var size = getSize(el);
+          initResult = binding.initialize(el, size.w, size.h);
+          elementData(el, "init_result", initResult);
+        }
+
+        if (binding.resize) {
+          var lastSize = getSize(el);
+          var resizeHandler = function(e) {
+            var size = getSize(el);
+            if (size.w === 0 && size.h === 0)
+              return;
+            if (size.w === lastSize.w && size.h === lastSize.h)
+              return;
+            lastSize = size;
+            binding.resize(el, size.w, size.h, initResult);
+          };
+
+          on(window, "resize", resizeHandler);
+
+          // This is needed for cases where we're running in a Shiny
+          // app, but the widget itself is not a Shiny output, but
+          // rather a simple static widget. One example of this is
+          // an rmarkdown document that has runtime:shiny and widget
+          // that isn't in a render function. Shiny only knows to
+          // call resize handlers for Shiny outputs, not for static
+          // widgets, so we do it ourselves.
+          if (window.jQuery) {
+            window.jQuery(document).on(
+              "shown.htmlwidgets shown.bs.tab.htmlwidgets shown.bs.collapse.htmlwidgets",
+              resizeHandler
+            );
+            window.jQuery(document).on(
+              "hidden.htmlwidgets hidden.bs.tab.htmlwidgets hidden.bs.collapse.htmlwidgets",
+              resizeHandler
+            );
+          }
+
+          // This is needed for the specific case of ioslides, which
+          // flips slides between display:none and display:block.
+          // Ideally we would not have to have ioslide-specific code
+          // here, but rather have ioslides raise a generic event,
+          // but the rmarkdown package just went to CRAN so the
+          // window to getting that fixed may be long.
+          if (window.addEventListener) {
+            // It's OK to limit this to window.addEventListener
+            // browsers because ioslides itself only supports
+            // such browsers.
+            on(document, "slideenter", resizeHandler);
+            on(document, "slideleave", resizeHandler);
+          }
+        }
+
+        var scriptData = document.querySelector("script[data-for='" + el.id + "'][type='application/json']");
+        if (scriptData) {
+          var data = JSON.parse(scriptData.textContent || scriptData.text);
+          // Resolve strings marked as javascript literals to objects
+          if (!(data.evals instanceof Array)) data.evals = [data.evals];
+          for (var k = 0; data.evals && k < data.evals.length; k++) {
+            window.HTMLWidgets.evaluateStringMember(data.x, data.evals[k]);
+          }
+          binding.renderValue(el, data.x, initResult);
+          evalAndRun(data.jsHooks.render, initResult, [el, data.x]);
+        }
+      });
+    });
+
+    invokePostRenderHandlers();
+  }
+
+
+  function has_jQuery3() {
+    if (!window.jQuery) {
+      return false;
+    }
+    var $version = window.jQuery.fn.jquery;
+    var $major_version = parseInt($version.split(".")[0]);
+    return $major_version >= 3;
+  }
+
+  /*
+  / Shiny 1.4 bumped jQuery from 1.x to 3.x which means jQuery's
+  / on-ready handler (i.e., $(fn)) is now asyncronous (i.e., it now
+  / really means $(setTimeout(fn)).
+  / https://jquery.com/upgrade-guide/3.0/#breaking-change-document-ready-handlers-are-now-asynchronous
+  /
+  / Since Shiny uses $() to schedule initShiny, shiny>=1.4 calls initShiny
+  / one tick later than it did before, which means staticRender() is
+  / called renderValue() earlier than (advanced) widget authors might be expecting.
+  / https://github.com/rstudio/shiny/issues/2630
+  /
+  / For a concrete example, leaflet has some methods (e.g., updateBounds)
+  / which reference Shiny methods registered in initShiny (e.g., setInputValue).
+  / Since leaflet is privy to this life-cycle, it knows to use setTimeout() to
+  / delay execution of those methods (until Shiny methods are ready)
+  / https://github.com/rstudio/leaflet/blob/18ec981/javascript/src/index.js#L266-L268
+  /
+  / Ideally widget authors wouldn't need to use this setTimeout() hack that
+  / leaflet uses to call Shiny methods on a staticRender(). In the long run,
+  / the logic initShiny should be broken up so that method registration happens
+  / right away, but binding happens later.
+  */
+  function maybeStaticRenderLater() {
+    if (shinyMode && has_jQuery3()) {
+      window.jQuery(window.HTMLWidgets.staticRender);
+    } else {
+      window.HTMLWidgets.staticRender();
+    }
+  }
+
+  if (document.addEventListener) {
+    document.addEventListener("DOMContentLoaded", function() {
+      document.removeEventListener("DOMContentLoaded", arguments.callee, false);
+      maybeStaticRenderLater();
+    }, false);
+  } else if (document.attachEvent) {
+    document.attachEvent("onreadystatechange", function() {
+      if (document.readyState === "complete") {
+        document.detachEvent("onreadystatechange", arguments.callee);
+        maybeStaticRenderLater();
+      }
+    });
+  }
+
+
+  window.HTMLWidgets.getAttachmentUrl = function(depname, key) {
+    // If no key, default to the first item
+    if (typeof(key) === "undefined")
+      key = 1;
+
+    var link = document.getElementById(depname + "-" + key + "-attachment");
+    if (!link) {
+      throw new Error("Attachment " + depname + "/" + key + " not found in document");
+    }
+    return link.getAttribute("href");
+  };
+
+  window.HTMLWidgets.dataframeToD3 = function(df) {
+    var names = [];
+    var length;
+    for (var name in df) {
+        if (df.hasOwnProperty(name))
+            names.push(name);
+        if (typeof(df[name]) !== "object" || typeof(df[name].length) === "undefined") {
+            throw new Error("All fields must be arrays");
+        } else if (typeof(length) !== "undefined" && length !== df[name].length) {
+            throw new Error("All fields must be arrays of the same length");
+        }
+        length = df[name].length;
+    }
+    var results = [];
+    var item;
+    for (var row = 0; row < length; row++) {
+        item = {};
+        for (var col = 0; col < names.length; col++) {
+            item[names[col]] = df[names[col]][row];
+        }
+        results.push(item);
+    }
+    return results;
+  };
+
+  window.HTMLWidgets.transposeArray2D = function(array) {
+      if (array.length === 0) return array;
+      var newArray = array[0].map(function(col, i) {
+          return array.map(function(row) {
+              return row[i]
+          })
+      });
+      return newArray;
+  };
+  // Split value at splitChar, but allow splitChar to be escaped
+  // using escapeChar. Any other characters escaped by escapeChar
+  // will be included as usual (including escapeChar itself).
+  function splitWithEscape(value, splitChar, escapeChar) {
+    var results = [];
+    var escapeMode = false;
+    var currentResult = "";
+    for (var pos = 0; pos < value.length; pos++) {
+      if (!escapeMode) {
+        if (value[pos] === splitChar) {
+          results.push(currentResult);
+          currentResult = "";
+        } else if (value[pos] === escapeChar) {
+          escapeMode = true;
+        } else {
+          currentResult += value[pos];
+        }
+      } else {
+        currentResult += value[pos];
+        escapeMode = false;
+      }
+    }
+    if (currentResult !== "") {
+      results.push(currentResult);
+    }
+    return results;
+  }
+  // Function authored by Yihui/JJ Allaire
+  window.HTMLWidgets.evaluateStringMember = function(o, member) {
+    var parts = splitWithEscape(member, '.', '\\');
+    for (var i = 0, l = parts.length; i < l; i++) {
+      var part = parts[i];
+      // part may be a character or 'numeric' member name
+      if (o !== null && typeof o === "object" && part in o) {
+        if (i == (l - 1)) { // if we are at the end of the line then evalulate
+          if (typeof o[part] === "string")
+            o[part] = tryEval(o[part]);
+        } else { // otherwise continue to next embedded object
+          o = o[part];
+        }
+      }
+    }
+  };
+
+  // Retrieve the HTMLWidget instance (i.e. the return value of an
+  // HTMLWidget binding's initialize() or factory() function)
+  // associated with an element, or null if none.
+  window.HTMLWidgets.getInstance = function(el) {
+    return elementData(el, "init_result");
+  };
+
+  // Finds the first element in the scope that matches the selector,
+  // and returns the HTMLWidget instance (i.e. the return value of
+  // an HTMLWidget binding's initialize() or factory() function)
+  // associated with that element, if any. If no element matches the
+  // selector, or the first matching element has no HTMLWidget
+  // instance associated with it, then null is returned.
+  //
+  // The scope argument is optional, and defaults to window.document.
+  window.HTMLWidgets.find = function(scope, selector) {
+    if (arguments.length == 1) {
+      selector = scope;
+      scope = document;
+    }
+
+    var el = scope.querySelector(selector);
+    if (el === null) {
+      return null;
+    } else {
+      return window.HTMLWidgets.getInstance(el);
+    }
+  };
+
+  // Finds all elements in the scope that match the selector, and
+  // returns the HTMLWidget instances (i.e. the return values of
+  // an HTMLWidget binding's initialize() or factory() function)
+  // associated with the elements, in an array. If elements that
+  // match the selector don't have an associated HTMLWidget
+  // instance, the returned array will contain nulls.
+  //
+  // The scope argument is optional, and defaults to window.document.
+  window.HTMLWidgets.findAll = function(scope, selector) {
+    if (arguments.length == 1) {
+      selector = scope;
+      scope = document;
+    }
+
+    var nodes = scope.querySelectorAll(selector);
+    var results = [];
+    for (var i = 0; i < nodes.length; i++) {
+      results.push(window.HTMLWidgets.getInstance(nodes[i]));
+    }
+    return results;
+  };
+
+  var postRenderHandlers = [];
+  function invokePostRenderHandlers() {
+    while (postRenderHandlers.length) {
+      var handler = postRenderHandlers.shift();
+      if (handler) {
+        handler();
+      }
+    }
+  }
+
+  // Register the given callback function to be invoked after the
+  // next time static widgets are rendered.
+  window.HTMLWidgets.addPostRenderHandler = function(callback) {
+    postRenderHandlers.push(callback);
+  };
+
+  // Takes a new-style instance-bound definition, and returns an
+  // old-style class-bound definition. This saves us from having
+  // to rewrite all the logic in this file to accomodate both
+  // types of definitions.
+  function createLegacyDefinitionAdapter(defn) {
+    var result = {
+      name: defn.name,
+      type: defn.type,
+      initialize: function(el, width, height) {
+        return defn.factory(el, width, height);
+      },
+      renderValue: function(el, x, instance) {
+        return instance.renderValue(x);
+      },
+      resize: function(el, width, height, instance) {
+        return instance.resize(width, height);
+      }
+    };
+
+    if (defn.find)
+      result.find = defn.find;
+    if (defn.renderError)
+      result.renderError = defn.renderError;
+    if (defn.clearError)
+      result.clearError = defn.clearError;
+
+    return result;
+  }
+})();
+</script>
+<style type="text/css">#wcLabel {position: absolute;border: 2px solid #fff;box-shadow: 0 0 4px 0 #008;padding: 2px;pointer-events: none; }#wcSpan {position: absolute;top: 100%;left: 0;background-color: rgba(255, 255, 255, 0.8);color: #333;margin-top: 6px;padding: 0 0.5em;border-radius: 0.5em;white-space: nowrap; }</style>
+<script>/*!
+ * wordcloud2.js
+ * http://timdream.org/wordcloud2.js/
+ *
+ * Copyright 2011 - 2013 Tim Chien
+ * Released under the MIT license
+ */
+
+'use strict';
+
+// setImmediate
+if (!window.setImmediate) {
+  window.setImmediate = (function setupSetImmediate() {
+    return window.msSetImmediate ||
+    window.webkitSetImmediate ||
+    window.mozSetImmediate ||
+    window.oSetImmediate ||
+    (function setupSetZeroTimeout() {
+      if (!window.postMessage || !window.addEventListener) {
+        return null;
+      }
+
+      var callbacks = [undefined];
+      var message = 'zero-timeout-message';
+
+      // Like setTimeout, but only takes a function argument.  There's
+      // no time argument (always zero) and no arguments (you have to
+      // use a closure).
+      var setZeroTimeout = function setZeroTimeout(callback) {
+        var id = callbacks.length;
+        callbacks.push(callback);
+        window.postMessage(message + id.toString(36), '*');
+
+        return id;
+      };
+
+      window.addEventListener('message', function setZeroTimeoutMessage(evt) {
+        // Skipping checking event source, retarded IE confused this window
+        // object with another in the presence of iframe
+        if (typeof evt.data !== 'string' ||
+            evt.data.substr(0, message.length) !== message/* ||
+            evt.source !== window */) {
+          return;
+        }
+
+        evt.stopImmediatePropagation();
+
+        var id = parseInt(evt.data.substr(message.length), 36);
+        if (!callbacks[id]) {
+          return;
+        }
+
+        callbacks[id]();
+        callbacks[id] = undefined;
+      }, true);
+
+      /* specify clearImmediate() here since we need the scope */
+      window.clearImmediate = function clearZeroTimeout(id) {
+        if (!callbacks[id]) {
+          return;
+        }
+
+        callbacks[id] = undefined;
+      };
+
+      return setZeroTimeout;
+    })() ||
+    // fallback
+    function setImmediateFallback(fn) {
+      window.setTimeout(fn, 0);
+    };
+  })();
+}
+
+if (!window.clearImmediate) {
+  window.clearImmediate = (function setupClearImmediate() {
+    return window.msClearImmediate ||
+    window.webkitClearImmediate ||
+    window.mozClearImmediate ||
+    window.oClearImmediate ||
+    // "clearZeroTimeout" is implement on the previous block ||
+    // fallback
+    function clearImmediateFallback(timer) {
+      window.clearTimeout(timer);
+    };
+  })();
+}
+
+(function(global) {
+
+  // Check if WordCloud can run on this browser
+  var isSupported = (function isSupported() {
+    var canvas = document.createElement('canvas');
+    if (!canvas || !canvas.getContext) {
+      return false;
+    }
+
+    var ctx = canvas.getContext('2d');
+    if (!ctx.getImageData) {
+      return false;
+    }
+    if (!ctx.fillText) {
+      return false;
+    }
+
+    if (!Array.prototype.some) {
+      return false;
+    }
+    if (!Array.prototype.push) {
+      return false;
+    }
+
+    return true;
+  }());
+
+  // Find out if the browser impose minium font size by
+  // drawing small texts on a canvas and measure it's width.
+  var minFontSize = (function getMinFontSize() {
+    if (!isSupported) {
+      return;
+    }
+
+    var ctx = document.createElement('canvas').getContext('2d');
+
+    // start from 20
+    var size = 20;
+
+    // two sizes to measure
+    var hanWidth, mWidth;
+
+    while (size) {
+      ctx.font = size.toString(10) + 'px sans-serif';
+      if ((ctx.measureText('\uFF37').width === hanWidth) &&
+          (ctx.measureText('m').width) === mWidth) {
+        return (size + 1);
+      }
+
+      hanWidth = ctx.measureText('\uFF37').width;
+      mWidth = ctx.measureText('m').width;
+
+      size--;
+    }
+
+    return 0;
+  })();
+
+  // Based on http://jsfromhell.com/array/shuffle
+  var shuffleArray = function shuffleArray(arr) {
+    for (var j, x, i = arr.length; i;
+      j = Math.floor(Math.random() * i),
+      x = arr[--i], arr[i] = arr[j],
+      arr[j] = x) {}
+    return arr;
+  };
+
+  var WordCloud = function WordCloud(elements, options) {
+    if (!isSupported) {
+      return;
+    }
+
+    if (!Array.isArray(elements)) {
+      elements = [elements];
+    }
+
+    elements.forEach(function(el, i) {
+      if (typeof el === 'string') {
+        elements[i] = document.getElementById(el);
+        if (!elements[i]) {
+          throw 'The element id specified is not found.';
+        }
+      } else if (!el.tagName && !el.appendChild) {
+        throw 'You must pass valid HTML elements, or ID of the element.';
+      }
+    });
+
+    /* Default values to be overwritten by options object */
+    var settings = {
+      list: [],
+      fontFamily: '"Trebuchet MS", "Heiti TC", "微軟正黑體", ' +
+                  '"Arial Unicode MS", "Droid Fallback Sans", sans-serif',
+      fontWeight: 'normal',
+      color: 'random-dark',
+      minSize: 0, // 0 to disable
+      weightFactor: 1,
+      clearCanvas: true,
+      backgroundColor: '#fff',  // opaque white = rgba(255, 255, 255, 1)
+
+      gridSize: 8,
+      origin: null,
+
+      drawMask: false,
+      maskColor: 'rgba(255,0,0,0.3)',
+      maskGapWidth: 0.3,
+
+      wait: 0,
+      abortThreshold: 0, // disabled
+      abort: function noop() {},
+
+      minRotation: - Math.PI / 2,
+      maxRotation: Math.PI / 2,
+
+      shuffle: true,
+      rotateRatio: 0.1,
+
+      shape: 'circle',
+      ellipticity: 0.65,
+
+      classes: null,
+
+      hover: null,
+      click: null
+    };
+
+    if (options) {
+      for (var key in options) {
+        if (key in settings) {
+          settings[key] = options[key];
+        }
+      }
+    }
+
+    /* Convert weightFactor into a function */
+    if (typeof settings.weightFactor !== 'function') {
+      var factor = settings.weightFactor;
+      settings.weightFactor = function weightFactor(pt) {
+        return pt * factor; //in px
+      };
+    }
+
+    /* Convert shape into a function */
+    if (typeof settings.shape !== 'function') {
+      switch (settings.shape) {
+        case 'circle':
+        /* falls through */
+        default:
+          // 'circle' is the default and a shortcut in the code loop.
+          settings.shape = 'circle';
+          break;
+
+        case 'cardioid':
+          settings.shape = function shapeCardioid(theta) {
+            return 1 - Math.sin(theta);
+          };
+          break;
+
+        /*
+
+        To work out an X-gon, one has to calculate "m",
+        where 1/(cos(2*PI/X)+m*sin(2*PI/X)) = 1/(cos(0)+m*sin(0))
+        http://www.wolframalpha.com/input/?i=1%2F%28cos%282*PI%2FX%29%2Bm*sin%28
+        2*PI%2FX%29%29+%3D+1%2F%28cos%280%29%2Bm*sin%280%29%29
+
+        Copy the solution into polar equation r = 1/(cos(t') + m*sin(t'))
+        where t' equals to mod(t, 2PI/X);
+
+        */
+
+        case 'diamond':
+        case 'square':
+          // http://www.wolframalpha.com/input/?i=plot+r+%3D+1%2F%28cos%28mod+
+          // %28t%2C+PI%2F2%29%29%2Bsin%28mod+%28t%2C+PI%2F2%29%29%29%2C+t+%3D
+          // +0+..+2*PI
+          settings.shape = function shapeSquare(theta) {
+            var thetaPrime = theta % (2 * Math.PI / 4);
+            return 1 / (Math.cos(thetaPrime) + Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'triangle-forward':
+          // http://www.wolframalpha.com/input/?i=plot+r+%3D+1%2F%28cos%28mod+
+          // %28t%2C+2*PI%2F3%29%29%2Bsqrt%283%29sin%28mod+%28t%2C+2*PI%2F3%29
+          // %29%29%2C+t+%3D+0+..+2*PI
+          settings.shape = function shapeTriangle(theta) {
+            var thetaPrime = theta % (2 * Math.PI / 3);
+            return 1 / (Math.cos(thetaPrime) +
+                        Math.sqrt(3) * Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'triangle':
+        case 'triangle-upright':
+          settings.shape = function shapeTriangle(theta) {
+            var thetaPrime = (theta + Math.PI * 3 / 2) % (2 * Math.PI / 3);
+            return 1 / (Math.cos(thetaPrime) +
+                        Math.sqrt(3) * Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'pentagon':
+          settings.shape = function shapePentagon(theta) {
+            var thetaPrime = (theta + 0.955) % (2 * Math.PI / 5);
+            return 1 / (Math.cos(thetaPrime) +
+                        0.726543 * Math.sin(thetaPrime));
+          };
+          break;
+
+        case 'star':
+          settings.shape = function shapeStar(theta) {
+            var thetaPrime = (theta + 0.955) % (2 * Math.PI / 10);
+            if ((theta + 0.955) % (2 * Math.PI / 5) - (2 * Math.PI / 10) >= 0) {
+              return 1 / (Math.cos((2 * Math.PI / 10) - thetaPrime) +
+                          3.07768 * Math.sin((2 * Math.PI / 10) - thetaPrime));
+            } else {
+              return 1 / (Math.cos(thetaPrime) +
+                          3.07768 * Math.sin(thetaPrime));
+            }
+          };
+          break;
+      }
+    }
+
+    /* Make sure gridSize is a whole number and is not smaller than 4px */
+    settings.gridSize = Math.max(Math.floor(settings.gridSize), 4);
+
+    /* shorthand */
+    var g = settings.gridSize;
+    var maskRectWidth = g - settings.maskGapWidth;
+
+    /* normalize rotation settings */
+    var rotationRange = Math.abs(settings.maxRotation - settings.minRotation);
+    var minRotation = Math.min(settings.maxRotation, settings.minRotation);
+
+    /* information/object available to all functions, set when start() */
+    var grid, // 2d array containing filling information
+      ngx, ngy, // width and height of the grid
+      center, // position of the center of the cloud
+      maxRadius;
+
+    /* timestamp for measuring each putWord() action */
+    var escapeTime;
+
+    /* function for getting the color of the text */
+    var getTextColor;
+    function random_hsl_color(min, max) {
+      return 'hsl(' +
+        (Math.random() * 360).toFixed() + ',' +
+        (Math.random() * 30 + 70).toFixed() + '%,' +
+        (Math.random() * (max - min) + min).toFixed() + '%)';
+    }
+    switch (settings.color) {
+      case 'random-dark':
+        getTextColor = function getRandomDarkColor() {
+          return random_hsl_color(10, 50);
+        };
+        break;
+
+      case 'random-light':
+        getTextColor = function getRandomLightColor() {
+          return random_hsl_color(50, 90);
+        };
+        break;
+
+      default:
+        if (typeof settings.color === 'function') {
+          getTextColor = settings.color;
+        }
+        break;
+    }
+
+    /* function for getting the classes of the text */
+    var getTextClasses = null;
+    if (typeof settings.classes === 'function') {
+      getTextClasses = settings.classes;
+    }
+
+    /* Interactive */
+    var interactive = false;
+    var infoGrid = [];
+    var hovered;
+
+    var getInfoGridFromMouseTouchEvent =
+    function getInfoGridFromMouseTouchEvent(evt) {
+      var canvas = evt.currentTarget;
+      var rect = canvas.getBoundingClientRect();
+      var clientX;
+      var clientY;
+      /** Detect if touches are available */
+      if (evt.touches) {
+        clientX = evt.touches[0].clientX;
+        clientY = evt.touches[0].clientY;
+      } else {
+        clientX = evt.clientX;
+        clientY = evt.clientY;
+      }
+      var eventX = clientX - rect.left;
+      var eventY = clientY - rect.top;
+
+      var x = Math.floor(eventX * ((canvas.width / rect.width) || 1) / g);
+      var y = Math.floor(eventY * ((canvas.height / rect.height) || 1) / g);
+
+      return infoGrid[x][y];
+    };
+
+    var wordcloudhover = function wordcloudhover(evt) {
+      var info = getInfoGridFromMouseTouchEvent(evt);
+
+      if (hovered === info) {
+        return;
+      }
+
+      hovered = info;
+      if (!info) {
+        settings.hover(undefined, undefined, evt);
+
+        return;
+      }
+
+      settings.hover(info.item, info.dimension, evt);
+
+    };
+
+    var wordcloudclick = function wordcloudclick(evt) {
+      var info = getInfoGridFromMouseTouchEvent(evt);
+      if (!info) {
+        return;
+      }
+
+      settings.click(info.item, info.dimension, evt);
+      evt.preventDefault();
+    };
+
+    /* Get points on the grid for a given radius away from the center */
+    var pointsAtRadius = [];
+    var getPointsAtRadius = function getPointsAtRadius(radius) {
+      if (pointsAtRadius[radius]) {
+        return pointsAtRadius[radius];
+      }
+
+      // Look for these number of points on each radius
+      var T = radius * 8;
+
+      // Getting all the points at this radius
+      var t = T;
+      var points = [];
+
+      if (radius === 0) {
+        points.push([center[0], center[1], 0]);
+      }
+
+      while (t--) {
+        // distort the radius to put the cloud in shape
+        var rx = 1;
+        if (settings.shape !== 'circle') {
+          rx = settings.shape(t / T * 2 * Math.PI); // 0 to 1
+        }
+
+        // Push [x, y, t]; t is used solely for getTextColor()
+        points.push([
+          center[0] + radius * rx * Math.cos(-t / T * 2 * Math.PI),
+          center[1] + radius * rx * Math.sin(-t / T * 2 * Math.PI) *
+            settings.ellipticity,
+          t / T * 2 * Math.PI]);
+      }
+
+      pointsAtRadius[radius] = points;
+      return points;
+    };
+
+    /* Return true if we had spent too much time */
+    var exceedTime = function exceedTime() {
+      return ((settings.abortThreshold > 0) &&
+        ((new Date()).getTime() - escapeTime > settings.abortThreshold));
+    };
+
+    /* Get the deg of rotation according to settings, and luck. */
+    var getRotateDeg = function getRotateDeg() {
+      if (settings.rotateRatio === 0) {
+        return 0;
+      }
+
+      if (Math.random() > settings.rotateRatio) {
+        return 0;
+      }
+
+      if (rotationRange === 0) {
+        return minRotation;
+      }
+
+      return minRotation + Math.random() * rotationRange;
+    };
+
+    var getTextInfo = function getTextInfo(word, weight, rotateDeg) {
+      // calculate the acutal font size
+      // fontSize === 0 means weightFactor function wants the text skipped,
+      // and size < minSize means we cannot draw the text.
+      var debug = false;
+      var fontSize = settings.weightFactor(weight);
+      if (fontSize <= settings.minSize) {
+        return false;
+      }
+
+      // Scale factor here is to make sure fillText is not limited by
+      // the minium font size set by browser.
+      // It will always be 1 or 2n.
+      var mu = 1;
+      if (fontSize < minFontSize) {
+        mu = (function calculateScaleFactor() {
+          var mu = 2;
+          while (mu * fontSize < minFontSize) {
+            mu += 2;
+          }
+          return mu;
+        })();
+      }
+
+      var fcanvas = document.createElement('canvas');
+      var fctx = fcanvas.getContext('2d', { willReadFrequently: true });
+
+      fctx.font = settings.fontWeight + ' ' +
+        (fontSize * mu).toString(10) + 'px ' + settings.fontFamily;
+
+      // Estimate the dimension of the text with measureText().
+      var fw = fctx.measureText(word).width / mu;
+      var fh = Math.max(fontSize * mu,
+                        fctx.measureText('m').width,
+                        fctx.measureText('\uFF37').width) / mu;
+
+      // Create a boundary box that is larger than our estimates,
+      // so text don't get cut of (it sill might)
+      var boxWidth = fw + fh * 2;
+      var boxHeight = fh * 3;
+      var fgw = Math.ceil(boxWidth / g);
+      var fgh = Math.ceil(boxHeight / g);
+      boxWidth = fgw * g;
+      boxHeight = fgh * g;
+
+      // Calculate the proper offsets to make the text centered at
+      // the preferred position.
+
+      // This is simply half of the width.
+      var fillTextOffsetX = - fw / 2;
+      // Instead of moving the box to the exact middle of the preferred
+      // position, for Y-offset we move 0.4 instead, so Latin alphabets look
+      // vertical centered.
+      var fillTextOffsetY = - fh * 0.4;
+
+      // Calculate the actual dimension of the canvas, considering the rotation.
+      var cgh = Math.ceil((boxWidth * Math.abs(Math.sin(rotateDeg)) +
+                           boxHeight * Math.abs(Math.cos(rotateDeg))) / g);
+      var cgw = Math.ceil((boxWidth * Math.abs(Math.cos(rotateDeg)) +
+                           boxHeight * Math.abs(Math.sin(rotateDeg))) / g);
+      var width = cgw * g;
+      var height = cgh * g;
+
+      fcanvas.setAttribute('width', width);
+      fcanvas.setAttribute('height', height);
+
+      if (debug) {
+        // Attach fcanvas to the DOM
+        document.body.appendChild(fcanvas);
+        // Save it's state so that we could restore and draw the grid correctly.
+        fctx.save();
+      }
+
+      // Scale the canvas with |mu|.
+      fctx.scale(1 / mu, 1 / mu);
+      fctx.translate(width * mu / 2, height * mu / 2);
+      fctx.rotate(- rotateDeg);
+
+      // Once the width/height is set, ctx info will be reset.
+      // Set it again here.
+      fctx.font = settings.fontWeight + ' ' +
+        (fontSize * mu).toString(10) + 'px ' + settings.fontFamily;
+
+      // Fill the text into the fcanvas.
+      // XXX: We cannot because textBaseline = 'top' here because
+      // Firefox and Chrome uses different default line-height for canvas.
+      // Please read https://bugzil.la/737852#c6.
+      // Here, we use textBaseline = 'middle' and draw the text at exactly
+      // 0.5 * fontSize lower.
+      fctx.fillStyle = '#000';
+      fctx.textBaseline = 'middle';
+      fctx.fillText(word, fillTextOffsetX * mu,
+                    (fillTextOffsetY + fontSize * 0.5) * mu);
+
+      // Get the pixels of the text
+      var imageData = fctx.getImageData(0, 0, width, height).data;
+
+      if (exceedTime()) {
+        return false;
+      }
+
+      if (debug) {
+        // Draw the box of the original estimation
+        fctx.strokeRect(fillTextOffsetX * mu,
+                        fillTextOffsetY, fw * mu, fh * mu);
+        fctx.restore();
+      }
+
+      // Read the pixels and save the information to the occupied array
+      var occupied = [];
+      var gx = cgw, gy, x, y;
+      var bounds = [cgh / 2, cgw / 2, cgh / 2, cgw / 2];
+      while (gx--) {
+        gy = cgh;
+        while (gy--) {
+          y = g;
+          singleGridLoop: {
+            while (y--) {
+              x = g;
+              while (x--) {
+                if (imageData[((gy * g + y) * width +
+                               (gx * g + x)) * 4 + 3]) {
+                  occupied.push([gx, gy]);
+
+                  if (gx < bounds[3]) {
+                    bounds[3] = gx;
+                  }
+                  if (gx > bounds[1]) {
+                    bounds[1] = gx;
+                  }
+                  if (gy < bounds[0]) {
+                    bounds[0] = gy;
+                  }
+                  if (gy > bounds[2]) {
+                    bounds[2] = gy;
+                  }
+
+                  if (debug) {
+                    fctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+                    fctx.fillRect(gx * g, gy * g, g - 0.5, g - 0.5);
+                  }
+                  break singleGridLoop;
+                }
+              }
+            }
+            if (debug) {
+              fctx.fillStyle = 'rgba(0, 0, 255, 0.5)';
+              fctx.fillRect(gx * g, gy * g, g - 0.5, g - 0.5);
+            }
+          }
+        }
+      }
+
+      if (debug) {
+        fctx.fillStyle = 'rgba(0, 255, 0, 0.5)';
+        fctx.fillRect(bounds[3] * g,
+                      bounds[0] * g,
+                      (bounds[1] - bounds[3] + 1) * g,
+                      (bounds[2] - bounds[0] + 1) * g);
+      }
+
+      // Return information needed to create the text on the real canvas
+      return {
+        mu: mu,
+        occupied: occupied,
+        bounds: bounds,
+        gw: cgw,
+        gh: cgh,
+        fillTextOffsetX: fillTextOffsetX,
+        fillTextOffsetY: fillTextOffsetY,
+        fillTextWidth: fw,
+        fillTextHeight: fh,
+        fontSize: fontSize
+      };
+    };
+
+    /* Determine if there is room available in the given dimension */
+    var canFitText = function canFitText(gx, gy, gw, gh, occupied) {
+      // Go through the occupied points,
+      // return false if the space is not available.
+      var i = occupied.length;
+      while (i--) {
+        var px = gx + occupied[i][0];
+        var py = gy + occupied[i][1];
+
+        if (px >= ngx || py >= ngy || px < 0 || py < 0 || !grid[px][py]) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    /* Actually draw the text on the grid */
+    var drawText = function drawText(gx, gy, info, word, weight,
+                                     distance, theta, rotateDeg, attributes) {
+
+      var fontSize = info.fontSize;
+      var color;
+      if (getTextColor) {
+        color = getTextColor(word, weight, fontSize, distance, theta);
+      } else if (settings.color instanceof Array) {
+        color = settings.color.shift() || 'black'; // pass a array in setting, default 'black'
+      } else {
+        color = settings.color;
+      }
+
+      var classes;
+      if (getTextClasses) {
+        classes = getTextClasses(word, weight, fontSize, distance, theta);
+      } else {
+        classes = settings.classes;
+      }
+
+      var dimension;
+      var bounds = info.bounds;
+      dimension = {
+        x: (gx + bounds[3]) * g,
+        y: (gy + bounds[0]) * g,
+        w: (bounds[1] - bounds[3] + 1) * g,
+        h: (bounds[2] - bounds[0] + 1) * g
+      };
+
+      elements.forEach(function(el) {
+        if (el.getContext) {
+          var ctx = el.getContext('2d');
+          var mu = info.mu;
+
+          // Save the current state before messing it
+          ctx.save();
+          ctx.scale(1 / mu, 1 / mu);
+
+          ctx.font = settings.fontWeight + ' ' +
+                     (fontSize * mu).toString(10) + 'px ' + settings.fontFamily;
+          ctx.fillStyle = color;
+
+          // Translate the canvas position to the origin coordinate of where
+          // the text should be put.
+          ctx.translate((gx + info.gw / 2) * g * mu,
+                        (gy + info.gh / 2) * g * mu);
+
+          if (rotateDeg !== 0) {
+            ctx.rotate(- rotateDeg);
+          }
+
+          // Finally, fill the text.
+
+          // XXX: We cannot because textBaseline = 'top' here because
+          // Firefox and Chrome uses different default line-height for canvas.
+          // Please read https://bugzil.la/737852#c6.
+          // Here, we use textBaseline = 'middle' and draw the text at exactly
+          // 0.5 * fontSize lower.
+          ctx.textBaseline = 'middle';
+          ctx.fillText(word, info.fillTextOffsetX * mu,
+                             (info.fillTextOffsetY + fontSize * 0.5) * mu);
+
+          // The below box is always matches how <span>s are positioned
+          /* ctx.strokeRect(info.fillTextOffsetX, info.fillTextOffsetY,
+            info.fillTextWidth, info.fillTextHeight); */
+
+          // Restore the state.
+          ctx.restore();
+        } else {
+          // drawText on DIV element
+          var span = document.createElement('span');
+          var transformRule = '';
+          transformRule = 'rotate(' + (- rotateDeg / Math.PI * 180) + 'deg) ';
+          if (info.mu !== 1) {
+            transformRule +=
+              'translateX(-' + (info.fillTextWidth / 4) + 'px) ' +
+              'scale(' + (1 / info.mu) + ')';
+          }
+          var styleRules = {
+            'position': 'absolute',
+            'display': 'block',
+            'font': settings.fontWeight + ' ' +
+                    (fontSize * info.mu) + 'px ' + settings.fontFamily,
+            'left': ((gx + info.gw / 2) * g + info.fillTextOffsetX) + 'px',
+            'top': ((gy + info.gh / 2) * g + info.fillTextOffsetY) + 'px',
+            'width': info.fillTextWidth + 'px',
+            'height': info.fillTextHeight + 'px',
+            'lineHeight': fontSize + 'px',
+            'whiteSpace': 'nowrap',
+            'transform': transformRule,
+            'webkitTransform': transformRule,
+            'msTransform': transformRule,
+            'transformOrigin': '50% 40%',
+            'webkitTransformOrigin': '50% 40%',
+            'msTransformOrigin': '50% 40%'
+          };
+          if (color) {
+            styleRules.color = color;
+          }
+          span.textContent = word;
+          for (var cssProp in styleRules) {
+            span.style[cssProp] = styleRules[cssProp];
+          }
+          if (attributes) {
+            for (var attribute in attributes) {
+              span.setAttribute(attribute, attributes[attribute]);
+            }
+          }
+          if (classes) {
+            span.className += classes;
+          }
+          el.appendChild(span);
+        }
+      });
+    };
+
+    /* Help function to updateGrid */
+    var fillGridAt = function fillGridAt(x, y, drawMask, dimension, item) {
+      if (x >= ngx || y >= ngy || x < 0 || y < 0) {
+        return;
+      }
+
+      grid[x][y] = false;
+
+      if (drawMask) {
+        var ctx = elements[0].getContext('2d');
+        ctx.fillRect(x * g, y * g, maskRectWidth, maskRectWidth);
+      }
+
+      if (interactive) {
+        infoGrid[x][y] = { item: item, dimension: dimension };
+      }
+    };
+
+    /* Update the filling information of the given space with occupied points.
+       Draw the mask on the canvas if necessary. */
+    var updateGrid = function updateGrid(gx, gy, gw, gh, info, item) {
+      var occupied = info.occupied;
+      var drawMask = settings.drawMask;
+      var ctx;
+      if (drawMask) {
+        ctx = elements[0].getContext('2d');
+        ctx.save();
+        ctx.fillStyle = settings.maskColor;
+      }
+
+      var dimension;
+      if (interactive) {
+        var bounds = info.bounds;
+        dimension = {
+          x: (gx + bounds[3]) * g,
+          y: (gy + bounds[0]) * g,
+          w: (bounds[1] - bounds[3] + 1) * g,
+          h: (bounds[2] - bounds[0] + 1) * g
+        };
+      }
+
+      var i = occupied.length;
+      while (i--) {
+        fillGridAt(gx + occupied[i][0], gy + occupied[i][1],
+                   drawMask, dimension, item);
+      }
+
+      if (drawMask) {
+        ctx.restore();
+      }
+    };
+
+    /* putWord() processes each item on the list,
+       calculate it's size and determine it's position, and actually
+       put it on the canvas. */
+    var putWord = function putWord(item) {
+      var word, weight, attributes;
+      if (Array.isArray(item)) {
+        word = item[0];
+        weight = item[1];
+      } else {
+        word = item.word;
+        weight = item.weight;
+        attributes = item.attributes;
+      }
+      var rotateDeg = getRotateDeg();
+
+      // get info needed to put the text onto the canvas
+      var info = getTextInfo(word, weight, rotateDeg);
+
+      // not getting the info means we shouldn't be drawing this one.
+      if (!info) {
+        return false;
+      }
+
+      if (exceedTime()) {
+        return false;
+      }
+
+      // Skip the loop if we have already know the bounding box of
+      // word is larger than the canvas.
+      var bounds = info.bounds;
+      if ((bounds[1] - bounds[3] + 1) > ngx ||
+        (bounds[2] - bounds[0] + 1) > ngy) {
+        return false;
+      }
+
+      // Determine the position to put the text by
+      // start looking for the nearest points
+      var r = maxRadius + 1;
+
+      var tryToPutWordAtPoint = function(gxy) {
+        var gx = Math.floor(gxy[0] - info.gw / 2);
+        var gy = Math.floor(gxy[1] - info.gh / 2);
+        var gw = info.gw;
+        var gh = info.gh;
+
+        // If we cannot fit the text at this position, return false
+        // and go to the next position.
+        if (!canFitText(gx, gy, gw, gh, info.occupied)) {
+          return false;
+        }
+
+        // Actually put the text on the canvas
+        drawText(gx, gy, info, word, weight,
+                 (maxRadius - r), gxy[2], rotateDeg, attributes);
+
+        // Mark the spaces on the grid as filled
+        updateGrid(gx, gy, gw, gh, info, item);
+
+        // Return true so some() will stop and also return true.
+        return true;
+      };
+
+      while (r--) {
+        var points = getPointsAtRadius(maxRadius - r);
+
+        if (settings.shuffle) {
+          points = [].concat(points);
+          shuffleArray(points);
+        }
+
+        // Try to fit the words by looking at each point.
+        // array.some() will stop and return true
+        // when putWordAtPoint() returns true.
+        // If all the points returns false, array.some() returns false.
+        var drawn = points.some(tryToPutWordAtPoint);
+
+        if (drawn) {
+          // leave putWord() and return true
+          return true;
+        }
+      }
+      // we tried all distances but text won't fit, return false
+      return false;
+    };
+
+    /* Send DOM event to all elements. Will stop sending event and return
+       if the previous one is canceled (for cancelable events). */
+    var sendEvent = function sendEvent(type, cancelable, detail) {
+      if (cancelable) {
+        return !elements.some(function(el) {
+          var evt = document.createEvent('CustomEvent');
+          evt.initCustomEvent(type, true, cancelable, detail || {});
+          return !el.dispatchEvent(evt);
+        }, this);
+      } else {
+        elements.forEach(function(el) {
+          var evt = document.createEvent('CustomEvent');
+          evt.initCustomEvent(type, true, cancelable, detail || {});
+          el.dispatchEvent(evt);
+        }, this);
+      }
+    };
+
+    /* Start drawing on a canvas */
+    var start = function start() {
+      // For dimensions, clearCanvas etc.,
+      // we only care about the first element.
+      var canvas = elements[0];
+
+      if (canvas.getContext) {
+        ngx = Math.floor(canvas.width / g);
+        ngy = Math.floor(canvas.height / g);
+      } else {
+        var rect = canvas.getBoundingClientRect();
+        ngx = Math.floor(rect.width / g);
+        ngy = Math.floor(rect.height / g);
+      }
+
+      // Sending a wordcloudstart event which cause the previous loop to stop.
+      // Do nothing if the event is canceled.
+      if (!sendEvent('wordcloudstart', true)) {
+        return;
+      }
+
+      // Determine the center of the word cloud
+      center = (settings.origin) ?
+        [settings.origin[0]/g, settings.origin[1]/g] :
+        [ngx / 2, ngy / 2];
+
+      // Maxium radius to look for space
+      maxRadius = Math.floor(Math.sqrt(ngx * ngx + ngy * ngy));
+
+      /* Clear the canvas only if the clearCanvas is set,
+         if not, update the grid to the current canvas state */
+      grid = [];
+
+      var gx, gy, i;
+      if (!canvas.getContext || settings.clearCanvas) {
+        elements.forEach(function(el) {
+          if (el.getContext) {
+            var ctx = el.getContext('2d');
+            ctx.fillStyle = settings.backgroundColor;
+            ctx.clearRect(0, 0, ngx * (g + 1), ngy * (g + 1));
+            ctx.fillRect(0, 0, ngx * (g + 1), ngy * (g + 1));
+          } else {
+            el.textContent = '';
+            el.style.backgroundColor = settings.backgroundColor;
+          }
+        });
+
+        /* fill the grid with empty state */
+        gx = ngx;
+        while (gx--) {
+          grid[gx] = [];
+          gy = ngy;
+          while (gy--) {
+            grid[gx][gy] = true;
+          }
+        }
+      } else {
+        /* Determine bgPixel by creating
+           another canvas and fill the specified background color. */
+        var bctx = document.createElement('canvas').getContext('2d');
+
+        bctx.fillStyle = settings.backgroundColor;
+        bctx.fillRect(0, 0, 1, 1);
+        var bgPixel = bctx.getImageData(0, 0, 1, 1).data;
+
+        /* Read back the pixels of the canvas we got to tell which part of the
+           canvas is empty.
+           (no clearCanvas only works with a canvas, not divs) */
+        var imageData =
+          canvas.getContext('2d').getImageData(0, 0, ngx * g, ngy * g).data;
+
+        gx = ngx;
+        var x, y;
+        while (gx--) {
+          grid[gx] = [];
+          gy = ngy;
+          while (gy--) {
+            y = g;
+            singleGridLoop: while (y--) {
+              x = g;
+              while (x--) {
+                i = 4;
+                while (i--) {
+                  if (imageData[((gy * g + y) * ngx * g +
+                                 (gx * g + x)) * 4 + i] !== bgPixel[i]) {
+                    grid[gx][gy] = false;
+                    break singleGridLoop;
+                  }
+                }
+              }
+            }
+            if (grid[gx][gy] !== false) {
+              grid[gx][gy] = true;
+            }
+          }
+        }
+
+        imageData = bctx = bgPixel = undefined;
+      }
+
+      // fill the infoGrid with empty state if we need it
+      if (settings.hover || settings.click) {
+
+        interactive = true;
+
+        /* fill the grid with empty state */
+        gx = ngx + 1;
+        while (gx--) {
+          infoGrid[gx] = [];
+        }
+
+        if (settings.hover) {
+          canvas.addEventListener('mousemove', wordcloudhover);
+        }
+
+        if (settings.click) {
+          canvas.addEventListener('click', wordcloudclick);
+          canvas.addEventListener('touchstart', wordcloudclick);
+          canvas.addEventListener('touchend', function (e) {
+            e.preventDefault();
+          });
+          canvas.style.webkitTapHighlightColor = 'rgba(0, 0, 0, 0)';
+        }
+
+        canvas.addEventListener('wordcloudstart', function stopInteraction() {
+          canvas.removeEventListener('wordcloudstart', stopInteraction);
+
+          canvas.removeEventListener('mousemove', wordcloudhover);
+          canvas.removeEventListener('click', wordcloudclick);
+          hovered = undefined;
+        });
+      }
+
+      i = 0;
+      var loopingFunction, stoppingFunction;
+      if (settings.wait !== 0) {
+        loopingFunction = window.setTimeout;
+        stoppingFunction = window.clearTimeout;
+      } else {
+        loopingFunction = window.setImmediate;
+        stoppingFunction = window.clearImmediate;
+      }
+
+      var addEventListener = function addEventListener(type, listener) {
+        elements.forEach(function(el) {
+          el.addEventListener(type, listener);
+        }, this);
+      };
+
+      var removeEventListener = function removeEventListener(type, listener) {
+        elements.forEach(function(el) {
+          el.removeEventListener(type, listener);
+        }, this);
+      };
+
+      var anotherWordCloudStart = function anotherWordCloudStart() {
+        removeEventListener('wordcloudstart', anotherWordCloudStart);
+        stoppingFunction(timer);
+      };
+
+      addEventListener('wordcloudstart', anotherWordCloudStart);
+
+      var timer = loopingFunction(function loop() {
+        if (i >= settings.list.length) {
+          stoppingFunction(timer);
+          sendEvent('wordcloudstop', false);
+          removeEventListener('wordcloudstart', anotherWordCloudStart);
+
+          return;
+        }
+        escapeTime = (new Date()).getTime();
+        var drawn = putWord(settings.list[i]);
+        var canceled = !sendEvent('wordclouddrawn', true, {
+          item: settings.list[i], drawn: drawn });
+        if (exceedTime() || canceled) {
+          stoppingFunction(timer);
+          settings.abort();
+          sendEvent('wordcloudabort', false);
+          sendEvent('wordcloudstop', false);
+          removeEventListener('wordcloudstart', anotherWordCloudStart);
+          return;
+        }
+        i++;
+        timer = loopingFunction(loop, settings.wait);
+      }, settings.wait);
+    };
+
+    // All set, start the drawing
+    start();
+  };
+
+  WordCloud.isSupported = isSupported;
+  WordCloud.minFontSize = minFontSize;
+
+  // Expose the library as an AMD module
+  if (typeof define === 'function' && define.amd) {
+    define('wordcloud', [], function() { return WordCloud; });
+  } else if (typeof module !== 'undefined' && module.exports) {
+    module.exports = WordCloud;
+  } else {
+    global.WordCloud = WordCloud;
+  }
+
+})(this); //jshint ignore:line
+</script>
+<script>// create element
+function newlabel(el){
+  var newDiv = document.createElement("div");
+  var newSpan = document.createElement("span");
+  newDiv.id = 'wcLabel';
+  newSpan.id = "wcSpan";
+  el.appendChild(newDiv);
+  document.getElementById("wcLabel").appendChild(newSpan);
+}
+
+// hover function
+function cv_handleHover(item, dimension, evt) {
+  var el = document.getElementById("wcLabel");
+  if (!item) {
+    el.setAttribute('hidden', true);
+
+    return;
+  }
+
+  el.removeAttribute('hidden');
+  // console.log(evt.srcElement.offsetLeft);
+
+  el.style.left = dimension.x + evt.srcElement.offsetLeft + 'px';
+  el.style.top = dimension.y + evt.srcElement.offsetTop + 'px';
+  el.style.width = dimension.w + 'px';
+  el.style.height = dimension.h + 'px';
+
+  this.hoverDimension = dimension;
+
+  document.getElementById("wcSpan").setAttribute(
+    'data-l10n-args', JSON.stringify({ word: item[0], count: item[1] }));
+  document.getElementById("wcSpan").innerHTML =item[0]+":" + item[1];
+
+}
+
+function updateCanvasMask(maskCanvas) {
+    var ctx = maskCanvas.getContext('2d');
+    var imageData = ctx.getImageData(
+        0, 0, maskCanvas.width, maskCanvas.height);
+    var newImageData = ctx.createImageData(imageData);
+
+    var toneSum = 0;
+    var toneCnt = 0;
+    for (var i = 0; i < imageData.data.length; i += 4) {
+        var alpha = imageData.data[i + 3];
+        if (alpha > 128) {
+            var tone = imageData.data[i]
+                + imageData.data[i + 1]
+                + imageData.data[i + 2];
+            toneSum += tone;
+            ++toneCnt;
+        }
+    }
+    var threshold = toneSum / toneCnt;
+
+    for (var i = 0; i < imageData.data.length; i += 4) {
+        var tone = imageData.data[i]
+            + imageData.data[i + 1]
+            + imageData.data[i + 2];
+        var alpha = imageData.data[i + 3];
+
+        if (alpha < 128 || tone > threshold) {
+            // Area not to draw
+            newImageData.data[i] = 0;
+            newImageData.data[i + 1] = 0;
+            newImageData.data[i + 2] = 0;
+            newImageData.data[i + 3] = 0;
+        }
+        else {
+            // Area to draw
+            // The color must be same with backgroundColor
+            newImageData.data[i] = 255;
+            newImageData.data[i + 1] = 255;
+            newImageData.data[i + 2] = 255;
+            newImageData.data[i + 3] = 255;
+        }
+    }
+
+    ctx.putImageData(newImageData, 0, 0);
+    console.log(maskCanvas.toDataURL());
+}
+
+
+
+//mask function
+function maskInit(el,x){
+  console.log(1)
+  str = x.figBase64;
+  //console.log(str)
+  var newImg = new Image();
+  newImg.src = str;
+  newImg.style.position = 'absolute';
+  newImg.style.left = 0;
+  // console.log(el.clientHeight);
+  newImg.width = el.clientWidth;
+  newImg.height = el.clientHeight;
+  // maskCanvas = init(el, x, newImg);
+  vvalue = 128
+
+  ctx = el.firstChild.getContext('2d');
+
+                ctx.drawImage(newImg, 0, 0, canvas.width, canvas.height);
+                updateCanvasMask(ctx);
+
+
+
+
+
+            WordCloud(el.firstChild, { list: listData,
+                  fontFamily: x.fontFamily,
+                  fontWeight: x.fontWeight,
+                  color: x.color,
+                  minSize: x.minSize,
+                  weightFactor: x.weightFactor,
+                  backgroundColor: x.backgroundColor,
+                  gridSize: x.gridSize,
+                  minRotation: x.minRotation,
+                  maxRotation: x.maxRotation,
+                  shuffle: x.shuffle,
+                  shape: x.shape,
+                  rotateRatio: x.rotateRatio,
+                  ellipticity: x.ellipticity,
+                  clearCanvas: false,
+                  drawMask: true,
+                  hover: x.hover || cv_handleHover,
+                  abortThreshold: 3000
+                  });
+}
+
+</script>
+<script>HTMLWidgets.widget({
+
+  name: 'wordcloud2',
+
+  type: 'output',
+
+  initialize: function(el, width, height) {
+    var newCanvas = document.createElement("canvas");
+    newCanvas.height = height;
+    newCanvas.width = width;
+    newCanvas.id = "canvas";
+
+    el.appendChild(newCanvas);
+    newlabel(el);
+    return(el.firstChild);
+  },
+  renderValue: function(el, x, instance) {
+  // parse gexf data
+        listData=[];
+        for(var i=0; i<x.word.length; i++){
+          listData.push([x.word[i], x.freq[i]]);
+        }
+     if(x.figBase64){
+
+        maskInit(el,x);
+        console.log(3)
+
+      }else{
+        WordCloud(el.firstChild, { list: listData,
+                        fontFamily: x.fontFamily,
+                        fontWeight: x.fontWeight,
+                        color: x.color,
+                        minSize: x.minSize,
+                        weightFactor: x.weightFactor,
+                        backgroundColor: x.backgroundColor,
+                        gridSize: x.gridSize,
+                        minRotation: x.minRotation,
+                        maxRotation: x.maxRotation,
+                        shuffle: x.shuffle,
+                        shape: x.shape,
+                        rotateRatio: x.rotateRatio,
+                        ellipticity: x.ellipticity,
+                        drawMask: x.drawMask,
+                        maskColor: x.maskColor,
+                        maskGapWidth: x.maskGapWidth,
+                        hover: x.hover || cv_handleHover
+                        });
+      }
+    },
+      resize: function(el, width, height) {
+      }
+
+});
+</script>
+
+</head>
+<body style="background-color: white;">
+<div id="htmlwidget_container">
+  <div class="wordcloud2 html-widget html-fill-item-overflow-hidden html-fill-item" id="htmlwidget-dca7f6e430e6ce796ab3" style="width:960px;height:500px;"></div>
+</div>
+<script type="application/json" data-for="htmlwidget-dca7f6e430e6ce796ab3">{"x":{"word":["migrants","migration","mobility","organization","acts","advance","area","assist","associés","authorities","authors","benefits","boundaries","challenges","collaborative","committed","community","concerning","conclusions","contributing","courand","des","designations","development","dignity","direction","economic","editorial","editorinchief","effort","electronic","email","employed","encourage","expressed","expression","fax","findings","form","france","frontiers","fruit","geneva","herein","hqiomint","human","humane","imply","imprimerie","intergovernmental","internet","interpretations","isbn","issn","issues","legal","material","may","means","mechanical","meeting","member","morillons","necessarily","operational","opinion","orderly","otherwise","part","partners","permission","photocopying","presentation","principle","printed","prior","publication","publisher","recording","reflect","reproduced","reserved","retrieval","rights","route","social","society","states","status","stored","switzerland","system","team","tel","territory","throughout","transmitted","understanding","uphold","views","volume","wellbeing","whatsoever","without","work","written","wwwiomint","contents","accessing","acknowledgements","acronymsxviii","background","barriers","box","boxes","building","chapter","circumstances","concluding","contributors","day","definitions","destinations","diversity","figures","foreword","gaps","guide","highlights","iii","introduction","maps","migrant","modern","opportunities","overview","papers","patterns","references","remarks","research","resilience","resources","seminars","settings","specific","tables","terminology","text","trends","types","urban","viii","voices","vulnerability","within","wmr","xiv","advantage","agents","citymakers","glossary","governance","inclusion","multilevel","poverty","reduction","abdiker","advisory","akio","andreu","annchristin","antoinette","appave","asmita","assistance","associate","azzouz","barbara","benea","bernd","bruce","carmela","carmelo","carmen","cartography","chair","chapters","cho","committee","copy","daniel","davide","doyle","editor","editors","executive","ezequiel","fabienne","ferrari","frances","frank","gervais","godeau","guadagno","gutierrez","hagger","helke","hemingway","jill","june","laczko","layout","lee","leonard","lorenzo","managing","marcelo","mohammed","mosca","naik","nakayama","olivier","paiva","paula","pindie","pisani","reed","rijks","robert","salvador","samri","sansae","solinap","stephen","suter","szabo","takehana","texido","theodora","torres","translators","trs","valerie","vii","wagner","wills","witt","writing","yuka","–","adelaide","agency","also","analysis","australia","australian","away","cecilia","centre","colleagues","collection","data","david","director","encouragement","environment","especially","field","finalizing","financial","framework","gathering","general","generous","governments","graeme","grateful","headquarters","hugo","including","institute","inter","january","lacy","like","local","maastricht","mayors","melissa","migrants’","netherlands","offices","officials","paper","passed","pay","population","practitioners","presentations","produce","professor","relevant","satterthwaite","seminar","series","siegel","special","support","swing","tacoli","thank","thanks","towards","tremendous","tribute","university","vision","william","wishes","africa","areas","asiapacific","attract","awumbila","ayşe","bhagat","businesses","caroline","entrepreneurship","fellow","global","gordon","graduate","group","head","health","immigrant","immigrants","india","integration","interrelated","john","katrin","linkages","marchand","mariama","marie","mcgranahan","metropolitan","october","oucho","outcomes","policy","price","principal","projects","ram","refugee","researcher","responses","retain","role","ruralurban","rural–urban","school","schultz","senior","settlements","strategies","studies","subsaharan","training","unumerit","urbanization","vulnerabilities","welcoming","çağlar","america","amina","arun","atilla","attention","belgium","benkaisbenbrahim","brighton","brussels","bureau","cantonal","carlos","challenge","cheffe","china","collyer","conflictinduced","coordinator","council","cécile","department","deputy","directorate","displacement","division","déléguée","emerging","environnement","factors","fatma","fernando","françois","fritz","gaziantep","geography","germany","hague","hamamatsu","hinrichs","implications","initiative","interior","japan","jean","joint","kingdom","kitawaki","kuhn","laboratoire","larsen","latin","lecturer","lobo","lyon","l’intégration","management","manager","maren","mayor","mena","mexico","michael","ministry","mona","mora","moulin","municipality","murillo","naga","nava","office","paths","pauline","peter","philippines","planning","pour","president","prilles","process","processes","programme","prévention","racisme","reader","refugees","region","reshaping","riallant","serageldin","situ","société","state","stuttgart","sussex","texier","toros","turkey","umr","unit","united","vaud","vigier","ville","wilfredo","xii","yasuyuki","york","zhu","álvarez","étrangers","şahin","accra","african","aires","aleppo","american","arab","aragon","argentina","bangalore","buenos","business","businesscity","care","comparing","concentrated","depopulated","different","displaced","effective","entering","ethnic","evolution","ewaste","examples","face","foreign","forms","generation","ghana","glasgow","hurricane","idps","indonesia","informal","internally","jakarta’s","kampungs","labour","latino","localities","london","los","mainstreaming","markets","objectives","offered","options","persons","pinos","policies","public","quality","remittance","republic","returning","risk","rotterdam","sandy","scotland","settlement","shelter","slums","spain","story","survey","syrian","tijuana","transit","used","violence","women","“first”","“fourth”","across","agglomerations","alegre","alone","arrive","base","big","brazil","brazilian","bridge","budgeting","built","bujumbura","can","capita","chadian","citymaking","countries","cycle","enjoying","entrepreneur","family","figure","foreignborn","future","gateway","gdp","hope","improved","intercultural","kindness","lagos","legacy","link","lisbon","living","load","madrid","major","making","many","mardin","marriage","mobile","morocco","moscow","mother","multicultural","mutual","national","need","ocean","offer","one","participatory","per","percentage","plans","porto","professional","proportion","rebuilding","sanctuary","selected","seoul","shape","stay","tale","time","trust","vienna","vietnamese","working","xvi","year","young","ypejhú","admission","asia–pacific","central","comparison","criteria","diversification","glance","good","immigration","map","oecd","practices","selfemployment","sources","table","xvii","acquired","acronyms","acs","adb","aids","alien","americas","apec","ascoa","asean","asia","asian","association","bank","cird","coe","communities","conference","control","deficiency","disease","domestic","dream","east","ecdc","ecuador","education","emhrn","epf","euromediterranean","europe","european","eurostat","experiences","forum","gem","give","grassroots","gross","habitat","hiv","housing","immune","immunodeficiency","infection","minors","monitor","nations","network","pacific","prevention","product","quito","reform","relief","service","societycouncil","south","statistical","sustainable","syndrome","union","virus","volunteering","administrative","affairs","applicable","around","assembly","cantonale","children’s","commissioner","cooperation","crescent","cross","cultural","desa","dialogue","d’intégration","educational","english","enterprise","federation","filipino","fund","globe","high","highlevel","hld","hong","idp","ifrc","iied","ilo","image","internal","janeiro","jmdi","kong","lep","limited","maltese","malteser","medicine","medizin","migranten","mmm","ncd","ngo","noncommunicable","nongovernmental","ofw","organisation","overseas","para","país","person","pic","proficiency","red","rio","roof","sar","scientific","societies","techo","thp","townshipvillage","tuberculosis","tve","uclg","undp","unesco","unhabitat","unhcr","unicef","wha","workers","xix","agenda","aims","arising","benefit","benefited","better","broadening","close","concludes","connection","connections","contribute","contribution","current","designed","discussion","diverse","dynamics","editions","eighth","enquiries","experience","expertise","external","focus","focuses","government","growing","growth","host","include","increasing","initiatives","innovative","investigate","level","main","much","north","ongoing","order","origin","particularly","perspective","policymaking","post","potential","present","previous","raise","recommendations","reduce","risks","scholars","series─","set","shaping","sharing","showcases","situation","situations","socioeconomic","take","takes","tends","together","ways","will","wish","xxi","’s","─","absence","absorb","account","almost","among","bases","becoming","billion","brings","build","cent","characterized","circularity","civil","concept","concerned","considers","database","debate","decades","decided","definition","degrees","demographic","details","developments","discourses","doubled","driving","dubai","employment","established","estimated","every","examines","example","expected","explores","fast","five","frontline","generally","glaring","governed","groups","grow","half","help","highlight","however","httpstatseoulgokr","ibid","ideas","identifies","implementation","increase","increased","increasingly","issue","issueshabitatiii","korean","largely","last","life","live","meet","mention","million","moving","nearly","next","number","omitted","organizations","overlooked","pattern","people","place","places","posed","private","rapidly","rate","recent","relationships","remarkable","reports","represent","residents","resides","resolution","revive","rising","rules","sector","see","seeking","seen","shaped","small","source","spatial","still","success","sydney","taken","temporality","ten","therefore","third","three","turn","vary","varying","week","wwwuclgorgen","years","“urban”","address","affair","although","another","approaches","arabia","borders","bring","calls","canada","cape","comparable","concentrate","connect","consistent","create","developed","developing","discussions","distinct","documenting","drawing","economies","emirates","enquiry","era","essentially","examining","existing","extent","fastest","features","four","headings","highincome","highly","historically","httpdataworldbankorgdatacataloggnipercapitaatlasandppptable","increases","johannesburg","key","kinshasa","lack","lacuna","lesser","likely","livelihood","low","markedly","messages","middleincome","migrating","move","political","populations","presented","primarily","reside","russian","saudi","serious","several","south–","spectrum","summarized","taking","tend","town","unprecedented","urbanized","urbanizing","•","added","age","aging","anticipated","arrangements","arriving","attracted","basic","become","capacity","centres","changes","changing","climatic","coherence","concern","congestion","consequences","consider","constant","contributor","coordination","cope","deal","deficits","determinant","directly","discussed","disjuncture","double","due","ebb","economy","environmental","escap","even","everywhere","exceptions","experiencing","exposure","fabric","fertility","flow","flows","forums","great","ground","hazards","higher","home","important","inevitable","infrastructure","instability","integral","interact","large","line","located","longterm","lowincome","make","managed","meantime","migrationinduced","mortality","needs","networks","newly","now","often","overcrowding","pace","partnership","policymakers","poorly","poses","pressure","programmes","provision","range","realities","regional","regions","remain","resulted","results","rise","scale","separate","services","shortfalls","skeldon","slow","solutions","southern","strong","structures","sufficient","survival","thus","transnational","trend","uneven","use","western","wider","able","access","accommodating","activity","advantages","affect","affected","behind","border","choice","clearly","cohesion","commonly","competitiveness","conditions","correlation","critical","defining","despite","destination","dinh","disasters","disproportionately","efforts","enhance","entry","escape","essential","estimates","except","exclusion","facilities","fadama","find","formal","fostering","found","fragile","function","furthermore","greatly","hard","hardships","hazardprone","hoang","households","hubs”","impact","improve","inadequate","inclusive","income","incoming","indicate","innovation","institutions","instruments","intended","irregular","job","kenya","kibera","land","lead","linked","links","lives","luong","maintained","market","measures","metropolis","middle","migratory","municipal","nairobi","negative","newcomers","nguyen","offers","old","owusu","participation","particular","people’s","planned","points","poor","positive","prioritized","productivity","prospects","pursuing","put","readily","ready","represented","restrictive","rigg","rural","settle","slum","stranded","strategically","strict","strike","study","supply","sustained","teye","today","toilet","truong","two","unclear","water","way","well","worst","yet","“transit","achieve","activities","adopted","affects","ageing","agendas","assets","assure","back","best","builders","citytocity","context","contributions","created","debates","decentralized","declaration","dedicated","diaspora","disaster","diversified","drew","enable","equitably","exchange","exist","facilitating","forging","goal","healthy","hierarchy","historical","httpssustainabledevelopmentunorg","identified","importance","inclusiveness","indispensable","information","measured","message","oftentimes","open","overrepresented","play","practical","preparedness","presence","productive","promoting","provide","pursued","recovery","reflected","related","religious","remittances","resourceful","response","send","significance","significant","since","skills","stable","strengthen","striven","summits","supporting","terms","undertaken","undertaking","unrecognized","vibrant","wwwunorgengameetingsmigration","ability","accommodated","action","along","approach","assess","associations","athens","authority","benchmark","berlin","bilbao","brookings","budgets","century","challenged","chase","citizenship","come","commitment","considered","consultation","cooperative","costeffective","decentralization","develop","diasporas","direct","dominant","dublin","federal","financing","flexible","formed","foster","frameworks","fujian","fuzhou","globalcitieshtm","globality","implement","includes","indicator","indicators","institution","institutional","interests","invest","investment","involving","launched","lille","locallevel","made","migrantinclusive","morgan","multistakeholder","must","necessary","needed","openness","platforms","position","positioned","practiced","prevent","promote","providers","province","public–private","reap","requires","rest","segregation","singapore","strategic","structure","trade","twentyfirst","widely","wwwbrookingseduaboutprojectsglobalcitiesabout","wwwjpmorganchasecomcontentdamjpmorganchaseenlegacycorporatecorporateresponsibility","wwwopencitieseuwebindexphpwhyopennessmattersen","’","addition","addressed","adjust","advanced","already","assemble","available","british","canadabased","certain","chacko","chronic","clear","cofounded","collections","collective","collett","complemented","consequence","consideration","contexts","damaging","dedicate","draw","empirical","ensure","eurocities","experts","far","forge","foundation’s","fully","gather","gidley","globalized","globally","goals","guinan","httpconferencecitiesofmigrationca","individual","informationsharing","initiat﻿﻿﻿﻿﻿﻿ive","integrative","intercity","kerr","leaders","levels","maytree","mcdaniel","mchugh","migrat﻿﻿﻿﻿ion","mostly","namely","nevertheless","opencities","path","practice","prosperity","published","question","rapid","reflection","relations","relatively","replicated","setting","shared","shows","socially","stakeholders","tanks","think","transition","transitions","try","unencumbered","unfortunately","variances","various","versa","vice","wellgoverned","wellmanaged","wisdom","words","wwwopencitieseuwebindexphphomeen","based","benchmarks","citylevel","covering","done","first","formulate","formulating","helps","identify","improvement","included","knowing","measure","numerous","organized","outreach","paucity","sets","shown","step","strategy","amicall","amicallreportengvsinglewebreadypdf","assessments","attitudes","citiesofmigrationcawpcontentuploadspracticeto","communication","compas","complementary","consortium","creating","equality","equitable","evidence","final","foundation","haikou","hainan","http","httpnwseurocitieseu","httppubsiiedorg","httprddfidgovuk","integrating","integratingcitieseuintegratingcitiesresourcesimplementoring","leadership","lessons","mediashellmediadivefinalpublicationpdf","november","output","oxford","pdfsiiedpdf","peer","policypdf","project","review","roundtable","services”","toolkits","toronto","ttp","vietnam","view","wpcontentuploadshainandocumentationpdf","www","wwwcompasoxacukfileadminfilespublicationsreports","wwweconomicpolicyforumorg","      ","‘diversity","“urbanisation","aspects","berlindeinternationaleseustaedteregionendownloadprojekte","chicago","citysized","civic","commission","doi","forward","hanoi","highlightswuphighlightspdf","httpesaunorgunpdwup","httpoldmetropolisorgsitesdefaultfilespublications","integrated","journal","livelihoods","manual","metropoliscmanualbarrierfreepdf","midwest","migrationpublicationswallchartdocswallchartpdf","pdf","publicationmigrants’inclusionincitiesinnovative","publicationspdfurbanizationwupreportpdf","publicationstcmcitiesmchughfinalpdf","reimagining","relevance","revision","sitesdefaultfilesdocsreimaginingthemidwestreportpdf","spanish","summary","summarycommissionsmetropolispdf","technical","texture","tth","unescomariepriceandelizabethchacko","urbanpoliciesandpracticespreparedforunhabitatand","wallchart","washington","wwwimmigrationpolicyorg","wwwmigrationpolicyorgsitesdefaultfiles","wwwresearchgatenet","wwwstadtentwicklung","wwwunorgendevelopmentdesapopulation","wwwunorgesapopulationmigrationdocumentsegmskeldon","accessed","citiesstateoftheworldscities","harmonious","httphdrundporgencontenthumandevelopmentreport","httpunesdocunescoorg","httpunhabitatorgbooksprosperityof","httpunhabitatorgbooksstateof","imagesmpdf","millennium","mirrorunhabitatorgpmsslistitemdetailsaspxpublicationid","overcoming","page","routledge","september","stability","stakeholders’","theworldscitiesharmoniouscities","wwwunescaporgsitesdefaultfilesescapsyb","yearbook","ababa","acapulco","addis","agra","aisho","allahabad","amman","amsterdam","angeles","antwerp","atlanta","auckland","austin","baltimore","bamako","bangkok","basel","beijing","brisbane","brownsville","brunswick","budapest","cabos","calexico","cancun","canterbury","casablanca","charlotte","chetumal","chi","chihuahua","cirebon","cleveland","columbus","copenhagen","dakar","dallas","daraa","dayton","delhi","detroit","diego","dongguan","emilia","faridabad","fez","francisco","fuqing","goma","goslar","gottingen","guangzhou","guiguinto","halifax","harare","homs","houston","indianapolis","ipswich","irbid","istanbul","izmir","jakarta","jose","kavarna","kobe","kolkata","kuala","kumashi","lansing","laredo","lattakia","lausanne","leipzig","louis","lubumbashi","ludhiana","lumpur","manila","mcallen","mediumsized","mega","melbourne","miami","milan","minh","montreal","mumbai","nashville","nogales","nyon","oakland","orleans","ota","paolo","paris","paso","paulo","philadelphia","phoenix","pittsburgh","portland","puerto","rabat","reggio","renens","rome","san","sao","seattle","shaded","shanghai","shenzen","shenzhen","stockholm","surat","são","tallinn","tamaulipas","tangier","tangiers","tapachula","tenosique","tokyo","total","toyota","tripoli","tunis","turin","vallarta","vancouver","venice","veracruz","vevey","warsaw","wuppertal","yverdonlesbains","zarqa","zurich","agreed","analysing","attributed","blurred","boundary","collected","common","comparative","conceived","concentration","consensus","content","creation","deep","defined","degree","density","determine","difference","distinction","domain","environments","extensions","functions","gravitate","indicative","inhibits","internationally","interplay","intersection","method","natural","net","noncity","observed","overall","progressive","researching","ruraltourban","share","suburban","systematically","traditional","unique","‘urban’","“”","addresses","defines","produced","scope","addressing","migrate","optimizing","phenomenon","projected","statistics","strive","unescap","agreements","antilles","bank’s","bilateral","bulgaria","cabo","champion","change","changed","cityto","climate","companies","concluded","decade","decline","discuss","drivers","effects","embarked","empower","engage","enterprising","experiments","facilitate","full","gaining","greenback","helping","ibm’s","immigrationfocused","improving","initiated","interethnic","know","leverage","locals","maintains","majority","midsize","migrantdiaspora","multiple","networking","ohio","participative","partner","past","perceived","players","polish","popularity","prosperous","reaching","register","resilient","respond","resuscitate","right","rockefeller","roma","roma’s","rotterdam’s","saint","savings","sectors","similar","smart","smarter","strengthened","structures”","successful","suriname","sustainability","tax","translated","transparency","turkish","verde","works","“opportunity","“remittance","”","accounts","act","additionally","alterations","attributable","becomes","bridgebuilders","broad","cases","closely","compared","concepts","conflated","core","crises","culture","equal","extension","fact","factor","frequently","hence","humanitarian","inflows","klaufus","less","lower","manufacturing","members","mentioned","norms","occur","periphery","plan","rates","refers","result","simple","simplified","simultaneously","slowed","sociocultural","solution","subohi","term","traders","usually","whereas","whole","“urbanization”","“urbanized”","adopt","apply","argued","ascribed","attempts","beyond","census","complex","differences","differentiation","differently","distinctions","extremes","fall","follows","fulfil","higherlevel","illustrated","inhabitants","instance","latter","lighting","linking","lowest","mali","methodology","migration’s","moderate","monitoring","nonagricultural","perceptions","regarding","reported","requirements","requiring","schools","size","standards","street","surrounding","sweden","technologies","thousand","thresholds","top","undercounting","underurbanization","using","variation","accounting","allow","areas”","characteristics","complexity","cores","currently","dealt","dwellers","eight","factored","fewer","functioning","hinterlands","hold","inadequately","just","linkage","lived","megacities","mere","municipalities","noted","precise","propelled","rather","relation","relative","shrink","sizes","studied","toward","towns","traveltowork","tripled","uses","whose","worldwide","“functional","actual","aggregate","aid","basis","binary","capacities","capital","censuses","comes","complexities","conduct","conducted","crucial","define","developing–developed","diversify","given","globalization","heterogeneous","httpwwwtheguardiancomglobaldevelopmentpovertymattersjandatadevelopment","impinges","importantly","influencing","instead","jurisdiction","knowledge","light","limitations","little","marker","mediates","models","movements","nature","nuanced","outofdate","phenomena","picture","playing","reasons","reception","reexamine","regular","reliablefiguresnumbers","residing","resulting","reveal","search","selection","shed","shift","shifting","south–north","studying","subnational","theoretical","transfers","understand","“nation”","aged","agencies","ages","allows","americans","annually","asylumseekers","attributes","block","born","boroughs","caribbean","category","chinese","cohorts","comparisons","component","comprise","comprised","constitutes","creole","decennial","demand","detailed","differ","differentiate","districts","division’s","dramatically","drawn","earlier","eds","elderly","eliminated","extremely","facts","finding","fits","followed","force","form”","french","hagendoorn","household","householder","illegal","impediment","indepth","interaction","interactions","italian","language","languages","limiting","list","long","micro","neighbourhoods","newest","note","obtained","occupation","occupied","onehalf","onethird","origins","outside","periodically","planning’s","provides","residence","responsible","rich","sample","second","sex","signed","six","spectrums","spoken","targeting","territorial","thirdgeneration","tracts","type","units","updated","useful","varies","veenman","vollebergh","wide","yorkers","york’s","“long","“rural”","annual","appropriate","arises","articulating","attainment","bell","board","books","branches","charged","collecting","complies","comprehensive","concerns","constantly","constraint","contributed","credible","crossnational","databases","dearth","decisions","deliberations","disadvantages","district","ensuring","esipova","evolving","formulation","generate","hampered","hindered","identifying","interpreter","libraries","modules","neighbourhood","ordered","paint","placed","profile","proper","provided","pugliese","questions","ray","receiving","registers","reliable","routes","sending","snapshot","sociodemographic","statutes","stocks","surveys","tables”","tandem","timely","vital","voter","voters","voting","whenever","widespread","“summary","accurate","additional","capture","carletto","concomitant","contain","corridors","cost","costs","coverage","date","departures","dimensions","disaggregated","distribution","entitlementsrestrictions","etc","frame","gender","geographic","habitats","heterogeneity","informing","infrequently","larrison","looking","microeconomic","mixed","multitopic","nascent","naturalization","periurban","permits","possible","primer","profiles","proxy","rarely","record","records","reliance","residency","respondents","sampling","shifts","smaller","space","specialized","stage","standardization","tracking","undercount","undercounted","underreported","underreporting","universal","upto","variables","winders","özden","absent","acknowledging","affluent","analyses","ones","paying","poorer","richer","scenarios","shifted","vast","according","acknowledges","adjusting","aligned","asset","capitalizing","chako","compilations","deliver","discourse","easy","elites","engines","enthusiasm","europes","examination","exhaustive","faced","focusing","immense","induced","interest","involves","inward","island","maximize","migration”","nonstate","optimal","partly","positively","practicetopolicy","promotion","prosperity”","proviso","quite","reducing","renewed","sees","skilled","steer","strongly","supports","thematic","website","whilst","wwwcoeinttdgcultureheritageculturecitiesdefaultenasp","“","accuracy","add","availability","caveats","comparability","compelling","comprehensiveness","draws","examine","explore","firstly","focused","groundwork","insightful","intends","interview","limit","literature","locations","maintain","migrantspecific","perspectives","pose","predominantly","primary","reviewing","secondary","secondly","seriously","shortage","subthemes","topics","upgrading","variety","articulates","bridges","budgetary","closer","dealing","diversifying","divides","either","element","encouraging","enhancing","entities","experienced","facing","families","flexibility","highlighted","impacts","looks","migrantled","movement","opportunity","potentially","pragmatic","proposes","reflections","tool","turns","underlines","urban–rural","vulnerable","admits","afraid","always","apartment","asked","asunción","babysitter","bar","bars","became","beginning","bit","boss","bought","boyfriend","brothers","buildings","bus","buy","calm","came","caring","cleaner","cleaning","cooking","cosy","couple","crisis”","cultivating","decorated","didn’t","difficult","don’t","early","electricity","employer","expensive","father","feel","feels","finances","fired","foot","footsteps","friends","get","grandchildren","helped","horizons","hours","imagines","impossible","informally","involved","later","left","lonely”","lot”","maicol","mercedes","mercedes’","miss","missing","money","moved","mum","nice","night","owner","paraguay","paraguayan","pedro","popular","recovering","rented","rents","restaurant","return","rhythm","room","round","running","sanitation","says","sisters","something","son","song","spend","split","started","starting","stayed","streets","suddenly","suitcase","temperatures","thinking","ticket","took","tranquility","travel","treating","tried","twelve","twice","unable","unsafe","visit","visits","walking","warm","wasn’t","went","wheat","worked","zero","’m","aldershot","ashgate","assessing","cited","citieseuintegratingcitiesresourcesimplementoringtoolkits","citiespdf","competitive","contemporary","demographics","eurasylum","httppublicationsiomintbookstorefreemigrationpolicypracticej","library","online","ournalmaypdf","psp","socio","stockport","toolkit","versus","vol","wiley","wwwascoaorgsitesdefaultfilesimmigrantsandcompetitive","wwwintegrating","wwwwileyonlinelibrarycom","cedla","contentrefs","documentation","february","governanceengpdf","httpeausagepubcom","httpoldmetropolisorg","httppubsiiedorgpdfsiiedpdf","immigrationpolicyorgsitesdefaultfilesdocsreimaginingthe","intermediate","jan","midwestreportpdf","newcity","oecdorggovregionalpolicyredefiningurbananewwaytomeas","redefining","sitesdefaultfilesinitiativesdocumentscmetropolisurban","sprawl","urbanisation","uremetropolitanareashtm","watching","workers’","wwwdawncomnewsworkersaeremittancesbuilda","asiaandpacific","context”","httpunesdocunescoorgimagesmpdf","s–","wwwunescaporgresourcesstatisticalyearbook","achieved","adequate","alleviate","architects","aside","compounded","considerable","difficulties","directions","effectively","emergence","end","fastgrowing","feature","forgotten","hand","incentivize","industrialized","learned","mix","nearby","opposed","organic","powerhouses","proactively","problem","promoted","racial","ranging","severe","side","sometimes","strengthening","struggle","struggling","theme","unexpected","unplanned","variations","whether","adapted","administrations","algiers","andor","arrivals","cairo","chaotic","counterurbanization","describes","emerge","emigrants","emigration","equipped","expansion","fes","following","gained","guatemala","inner","knowhow","known","leading","mass","metro","münz","nigeria","outlying","peri","placing","reality","receives","roberts","secondtier","section","shanty","south–south","strain","suburbs","today’s","unforeseen","walton","adds","australia’s","canada’s","canadian","character","classification","classified","concentrations","corporations","differentially","evenly","fairly","heart","lie","mainly","moreover","multinational","nation’s","native","nodes","outlook","outstrip","parts","press","proportions","rankings","recognized","sassen","show","singer","situated","systems","usual","virtue","workforces","wwwatkearneycomresearchstudiesglobalcitiesindexsthashnebcorkcdpuf","aimed","arrival","attractive","backlash","balance","compiled","composition","corporate","entire","explicit","governmental","ica","ila","lan","largest","learning","nativeborn","ngos","non","numbers","rid","rienzo","robust","serve","sin","ste","sudden","thirty","tre","tte","unauthorized","undocumented","vargassilva","“gateway”","affordable","afforded","air","amenities","bayona","belt","clean","continue","conurbations","demographia","exurban","florida","gains","gilalonso","glick","hightech","hubs","illequipped","industrial","knowledgehubs","larger","lazio","lombardy","loss","losses","lowcost","medical","offset","optimize","option","outflow","period","personal","postindustrial","provinces","receive","recorded","registered","respectively","roughly","rust","safety","schiller","settling","ssiim","substantial","sun","tier”","transport","universities","value","waltonroberts","“second","afflicted","ailing","approximately","arkansas","automobile","backandforth","binational","boosting","brown","concurrently","construction","counter","depopulation","emergent","encouraged","enlargement","exists","failing","formerly","forth","fourthlargest","göttingen","highend","house","incentivizing","industry","inevitably","insecure","jobs","kasimis","led","lifestyle","likewise","lost","meat","mexicans","midwestern","mitigated","neighbouring","notable","onequarter","outmigration","packing","parttime","permanently","power","reconfiguring","reduced","remaining","remote","restructuring","revitalization","revitalize","seasonal","security","shortages","shrinking","spa","spurring","stabilizing","striffler","suffered","tighter","tobocman","town’s","turned","underinvestment","undermine","undermining","uninsured","unsustainable","welcomed","willing","yearround","accommodate","brought","cause","constituted","contention","decentralizing","dispute","driven","dual","exportled","fill","former","fringe","fringes","huge","industries","legates","multi","multiethnic","multilingual","near","northeast","periurbanization","production","reached","redistribute","reflects","remained","residences","restructured","seek","sought","spaniards","thailand","tourist","welfare","workforce","accounted","acute","allocation","arisen","associated","avoiding","caused","centrallocal","china’s","coastal","conflicting","continued","costsharing","cover","debts","demands","economist","edges","eighty","enterprises","excluded","exodus","expropriated","fahmi","faith","fastestgrowing","fiscal","government’s","halt","hukou","hundred","incurred","largescale","late","laws","mitigate","outer","ownership","pollution","procedures","property","providing","real","redirect","registration","relating","relaxed","repercussions","reportedly","resource","responsibilities","restrictions","revenue","speculated","spending","stateowned","traffic","transformed","tves","uncontrolled","unemployment","vested","villagers’","west","calculations","cañada","citydwellers","contest","dharavi","difficulty","durable","economically","makes","oceania","official","oranienplatz","physical","proactive","proliferation","recognition","southeast","suffering","twentieth","accommodation","accumulation","adaptation","anirudh","anyone","appliances","arrived","bangalore’s","belong","cash","categories","compares","constructions","contrast","daily","descendants","described","divided","drinking","droughts","erratic","eviction","expenditure","fear","generations","generation”","hardly","indeed","landless","lease","middleclass","newer","nonnotified","notified","officially","older","permanent","phones","plots","policyrelevant","poorest","prakash","prevail","purchased","rainfall","recently","rent","residual","settled","settlements’","sriram","staging","strata","striking","temporary","tenants","tent","typical","typically","uncertainty","viewed","villages","wells","“first","“notified”","“recognized”","alternative","applying","communal","conferring","consequently","controls","customary","deliberate","deterring","dropped","fuel","garbage","grew","grown","identity","kilometres","kinds","lacking","leaving","mainstream","morocco’s","nonexistent","ostanel","patronage","planners","regularization","rehouse","relatives","remains","removal","repayment","residential","secure","single","slums”","squatting","stem","stops","subsidies","tenure","though","transactions","transforming","unknown","unlikely","vendors","weak","xenophobia","aaiún","abidjan","abuja","accumulate","afield","agadez","agadir","alexandria","bakewell","begun","bissau","bossasso","burao","closed","conakry","côte","djibouti","dwindled","d’ivoire","freetown","gao","gateways","icmpd","imap","involuntary","juba","jónsson","kampala","khartoum","longstay","marconi","mediterranean","mogadishu","monrovia","mtm","niamey","nouadhibou","nouakchott","oran","ouagadougou","ouargla","portonovo","posts","pressures","qadarif","reach","sea","sebha","tamanrasset","tightened","traditionally","wishing","wwwimapmigrationorgindexphpid","‘interactive","abusive","acayucan","acquire","arrests","belize","casillas","ceibo","checks","ciudad","coordinated","criminality","cruz","culiacán","depending","divide","eagle","ending","ensenada","escondido","evictions","fluctuates","frequent","frontier","govern","hermosillo","honduras","influences","integrate","juarez","leaves","luis","madero","maghrebi","manzanillo","maritime","matamoros","mazatlan","mexicali","mexican","monclova","negras","nuevo","pass","paz","permeability","piedras","potosi","prompted","proximity","puebla","putting","ramírez","returned","reynosa","salina","segregated","shacks","shelters","starts","stemming","tampico","tegucigalpa","temporarily","ultimate","usa","zacatecas","“transit”","abroad","active","approved","atención","attracts","august","baja","borders”","california","call","carry","compliance","comprises","consejo","consist","coordinate","counselling","days","december","delegations","earnings","estatal","exporter","fairs","federallevel","flat","free","governor","hired","kept","lamadrid","law","meals","migrante","obligations","operations","orientation","positions","promoter","protection","received","reemigration","representatives","retention","returnees","runs","said","screen","secretariats","socalled","statelevel","televisions","truly","upon","vega","wages","zone","“maquiladoras”","centring","children","circular","commuters","costa","council’s","documents","earning","elsewhere","establish","estimate","gordo","interacts","josé","mexico”","millions","notes","obtain","precarious","preeminent","profound","quickly","redistribution","reinsertion","relocating","represents","rica","rural‑‑rural","sixth","srivastrava","successfully","urbantourban","urban–urban","“background","average","coast","conversely","declined","gain","ian","inegi","inmigrants","lah","lowskilled","oil","planet","populous","respective","rural–rural","sobrino","tourism","vibrancy","adequately","agriculture","brick","case","caste","congo","declining","democratic","distance","distances","duration","durations","exceeds","expatriates","failure","homogeneous","indian","indians","india’s","interstate","intradistrict","lacunae","lowestincome","microsurveys","mining","nationallevel","predominant","previously","quarrying","rameez","religion","relocation","representing","ruraltorural","segment","semipermanent","short","shortterm","showing","spread","stabilization","students","subsectors","suggest","textile","transportation","twothirds","unused","varma","web","anywhere","careers","competing","constitute","dormitory","dynamic","fifty","heritage","highest","incentives","justice","korea","nationals","north–south","parental","professionals","relocate","remove","resident","serving","stock","talent","talents","transfer","weakest","zweig","brunei","crisis","darussalam","designated","entered","female","greece","huang","influx","intraregional","ireland","italy","laboursurplus","lanka","malaysia","managerial","migrations","occupations","rahman","renowned","singapore’s","sites","sri","steadily","student","taiwan","worker","yeoh","zealand","accept","advocated","amid","bringing","called","committee’s","communications","confronted","cultures","declaration”","deepening","descent","drastic","duties","eliminate","embrace","engaged","establishment","fore","foreigners","formation","fulfilment","grapple","households”","inequality","japanese","mandatory","overarching","promotes","ratio","required","residents”","respect","smallest","structural","subaru","suzuki","symbiosis","symbiotic","tabunkakyōsei","transform","trying","twentysix","values","visa","“hamamatsu","“multiculturalism”","“multicultural”","“population","academics","adopts","attended","brazilians","cabinet","classes","departure","examined","expanding","facilitated","filipinos","forged","heading","heaviest","intensified","interconnected","kumasi","ministries","misunderstandings","mobility’","nonafrican","nonprofit","prevailing","proposed","protocols","reinforced","significantly","simply","spaces","static","summit","tackle","transient","treatment","underlying","unep","‘african","accompanied","allowed","arts","booming","citytwinning","conjoined","differentiated","differentiations","door”","emerges","endured","enjoy","exchanges","existence","feasible","fincher","implied","individuals","involve","involvement","legally","longstanding","lyons","media","moroccan","multilateral","music","noncitizen","others”","society”","sports","stren","tighten","twinning","validity","vertovec","zhigang","özbabacan","“majority","“migrant","“open","“superdiversity”","academic","alike","bangladesh","birth’","cdef","comdoifullpreview","confined","converse","decent","deprived","diversities","greater","hall","httpdatalondongovukdatasetpopulationcountrybirthresourcedfbbe","jamaica","lane","pakistan","peckham","poland","proficiencies","proprietors","romania","rye","shop","shopping","somalia","spoonley","store","superdiverse","twenty","unfold","wwwtandfonline","‘population","‘transethnography’","acknowledged","alienation","antidiscrimination","avoid","causes","choices","choosing","clustering","collet","combat","dependent","disadvantaged","discrimination","duncan","enclaves","ethnicities","flight’","iceland","implementing","incentive","indirect","inequalities","inherent","intergenerational","intergroup","introducing","kihato","leads","legislation","majoritygroup","might","minorities","minority","nationalities","overlook","overwhelming","petrovic","problematic","quotas","reconsider","rental","restricting","seem","selfsegregation","sense","spatially","specifically","tactical","tasankok","telecommunication","termed","unequally","vouchers","‘white","bordering","condition","conflict","crack","crossborder","design","destined","disasterinduced","discriminatory","easier","enter","ethnicity","extreme","facto","fled","forced","hostile","incomegenerating","linguistic","loose","maintaining","makeup","migrantreceiving","mitigating","normal","priority","properly","recognize","scapegoating","shocks","simone","simultaneous","spite","stance","ties","times","worse","burkina","claim","constituting","dates","drive","else","emerged","everincreasing","farm","faso","grandparents","harsh","indigenous","kayaye","manifesting","melting","mids","migrated","migratingoutofpovertydfidgovukfilesfilephpnamewpawumbilaowusuteyecanrural","neighbourhoods’","never","niger","nima","northern","notoriously","parents","permanency","porters","pot","sahelian","urbanmigrationintoslumsreducepovertyfinalpdfsite","‘migrant","actually","afford","agreement","assistant","banque","burundi","burundian","burundians","comfortable","communicate","composed","contact","doctor","easily","economics","elections","eligible","enjoys","floods","fluent","follow","friendly","functional","hospital","insurance","kirundi","learn","manages","maya","modelling","moment","monetary","neighborhood","participate","police","prone","resort","république","safe","standard","swahili","tenancy","toilets","trustworthy","yearold","abs","andtheafricancity","aussies","ausstatsabsnsflookupmainfeatures","bangalore”","compendium","denied","fileadminmultimediafieldnewdelhipdfinternalmigration","hit","httpwwwabsgovauausstatsabsnsf","iile","july","latestproductsmediarelease","mirail","peak","release","sitesdefaultfilespaperbayonagilwspdf","suburbanization","synthesis","toulouse","workshop","workshopvolpdf","wwwabsgovau","wwwenhrcom","wwwimioxacukpublicationsmigrationmobility","wwwunescoorgnew","“slum","anónima","aypdf","centroamericanos","cndh","comisión","curtis","demography","derechos","discreta","dordrecht","enpdf","extended","fcm","fugaz","handbook","httpeuromedrights","httppublications","httpzuniaorgposthowtoenhance","humanos","immigrationanddiversityincanadiancitiesandcommunities","inclusivenessforinternationalmigrantsinourcitiesvarious","integrationeuropemainstreamingapproachesinclusion","internacional","iomintbookstorefreemigrationpolicypracticejournalm","kulcsar","las","migraciones","méxico","nacional","nations”","nine","oim","organización","orgwpcontentuploadspmmoroccofinalversionen","ottawa","springer","stakeholdersevie","transmigrantes","una","vida","wwwfcmcadocumentsbackgrounders","wwwmigrationpolicyorgresearchfutureimmigrant","aguascalientes","april","cavendish","celebrating","censo","citylab","consultaaspcpsest","cornell","cpvdefaultaspx","downscaled","estadística","geografía","html","httppublicationsiomintbookstoreindexphpmainpage","informática","instituto","ithaca","lens","locality","locating","marshall","partnering","pathways","población","politicsverydifferentmigrationdrivinggrowthus","productinfocpathproductsid","progress","reinforcing","rescaling","researchresidentialsegregationtransatlanticanalysis","rim","theory","transatlantic","vivienda","wwwcitylabcom","wwwinegiorgmxestcontenidosproyectosccpv","wwwinegiorgmxsistemasolapproyectosbd","wwwmigrationpolicyorg","wwwmojgojpenglishibib","xiii","agriregionieuropa","agriregionieuropaunivpmitcontentarticledemographic","amsterdamedocssessionostanelpdf","brief","bruegel","center","contours","dataassetsworddocgiobannadoc","den","doors","dragon’s","europe’s","exploring","fortalenteuropesmigrationchallenge","httpwwwoecdilibraryorgsocialissuesmigrationhealth","mozambicans","narratives","orgpublicationspublicationdetailpublicationtheglobalrace","pluralism","publicationsiomintbookstorefreemigrationpolicypracticejournal","race","regulation","septpdf","sociological","steering","tackling","tacklingthepolicychallengesofmigrationen","trendsruraleuropeandinternationalmigrationruralareas","twentyfirstcentury","wilson","woodrow","wwwbruegel","wwwrcorgconferences","wwwspsedacuk","comstatistics","daedulus","dormitories","garland","hanley","hopkins","httpforeignworkerdormitory","httpwwwnptdgovsgportalsnewspopulation","inbriefpdf","integrationchallengesmigrants","johns","labor","march","migrationobservatoryoxacukbriefingsmigrantsukoverview","migrationpolicyorgarticleinternallabormigrationindiaraises","minister’s","observatory","prime","princeton","raises","renegotiating","ruble","turbulence","article","belleville","bonn","cohesionandeconomicbenefitspdf","demográfica","edition","ethnologist","faculty","gccanhsenmindexengcfm","geosciences","httpdspacelibraryuunlhandle","httpwolizaorgarticlessuperdiversitysocial","hyperdiversified","illinois","iza","migración","neither","pp–","sforeignbornpopulationsoarstomillion","situación","skeldonpdf","soars","srivastava","superdiversity","urbana","utrecht","wwwcbccanewscanadacanada","wwwdemographiacomdbworldua","wwwstatcan","wwwunorgesapopulationmigrationdocumentsegm","arabcitieschallengesofurbantransition","democracy","description","fieldnewdelhipdfpolicybriefsfulllowpdf","getelectronicversionaspxnralt","httpmirrorunhabitatorgpmss","httpunhabitatorgbooks","httpunhabitatorgbooksstreetsaspublic","httpunhabitatorgbooksthestateof","httpunhabitatorgbooksurbanplanningforcityleaders","migrants”","researchrevitalizingdetroitistherearoleforimmigration","revitalizing","smallsize","spacesanddriversofurbanprosperity","stateofafricancitiesreimaginingsustainableurban","unescochairiuavitenresearchprinsmallsizecities","wwwunescoorgnewfileadminmultimedia","“prin","arlington","belgiumcountrypermanentimmigration","booksstateofafricancitiesgovernanceinequalitiesand","brain","comparatively","compete","conceiving","counties","county","dilenge","doha","drain","erc","httpunhabitatorg","indexhtml","maxplanckinstitute","mmg","municipios","observing","paperswp","reverse","rico","tabiddefaultaspx","totals","unparalleled","urbanlandmarkets","vintage","visualizing","wwwcensusgovpopestdatacountiestotals","wwwmigrationpolicyorgarticle","wwwmmgmpgdepublicationsworking","wwwuaestatisticsgovaeenglishhome","abstract","briefpdf","censusgovcompendiastatabtablesspdf","censusprofileandsummaryreportsqstatscultureidentityauck","gccanhsenmassaxxengcfm","mraspx","opendocument","tabnamesummaryprodnoissuenumview","wwwabsgovauausstatsabsnsf","wwwnptdgovsgportalsnewspopulationin","wwwstatsgovtnzcensus","birth","cites","frankfurt","frankfurtammain","httpeceuropaeueurostat","httpthehagueprocessorg","informatie","juzwiak","mcgregor","ois","onderzoek","phpjkstatistischesportraitpdf","portrait","statistiek","wordpresswpcontentuploadsthprotterdampdf","wwwfrankfurtdesixcmsmedia","wwwoisamsterdamnlenglish","absnsflatestproductsmediarelease","administration","book","cat","comcitiesmumbai","comune","datastreamsdatastreamcontent","endocumenttabnamesummaryprodnoissue","foreignbornpopulation","gokrfrtbbstypecommonselectboardarticledobbsidbbsms","govmy","httpworldpopulationreviewcom","ibibhtml","mediagallerycomunemilanoitcdmobjectschangeme","milano","numview","settore","statgojpenglishdatanenkanhtm","statistica","torsforeignbornpopulation","trnttid","worldcitieskualalumpurpopulation","wwwabsgovauausstats","wwwabsgovauausstatsabsnsflookupmainfeatures","wwwmogaha","wwwmogahagokrengaengmaindo","wwwmojgojpenglish","wwwstatistics","wwwworldcitiescultureforum","wwwworldcitiescultureforumcomindica","wwwworldcitiescultureforumcomindicators","abuse","accidents","actors","adversely","adversity","creates","decision","diseases","everyday","exploitive","independence","infectious","lowpaid","mental","nonmigrant","obstacles","psychosocial","representation","rigid","sound","stresses","voice","finally","manmade","achieving","aggravate","anticipate","arena","attempt","benefitting","cannon","centralized","conflicts","delivery","drought","efficient","ever","flight","generates","generating","greiner","hardship","immediate","induce","insufficient","location","marginalized","modifies","offfarm","problems","recover","sakdapolrak","season","segments","similarly","tradeoffs","undertake","unmanaged","whatever","actively","aggression","amongst","anonymity","blamed","burglary","careful","coincides","crimes","criminal","disintegration","disrupt","disrupted","engagement","escaping","forces","freedom","gaillard","harder","integrity","intraurban","longer","marginalization","perpetrators","reason","reductions","refuge","remaking","site","suffer","systematic","target","threat","threats","unwanted","un’s","victims","violent","worsening","channels","civilians","coincided","degradation","disproportionate","donner","earn","eswaran","floodprone","food","heavily","hub","infrastructures","least","marginal","relationship","rely","rodriguez","rubbish","sherbinin","straightforward","usd","vastly","violation","wars","waste","youth","zones","accessible","aftermath","alerts","awarenessraising","behaviour","bonds","consolidate","constraints","dans","delivering","diderot","disseminating","effect","endure","evacuate","explaining","favoured","flood","floodrelated","gone","green","hazardous","improvements","indonésie","informels","institutionnelles","insufficiently","les","liés","l’eau","mobilize","neighbourhoodlevel","nobuild","occurred","phd","possessions","predisaster","prematurely","prevents","protect","push","quartiers","refuse","regularizing","relocated","relocations","removing","resist","risques","rubble","réduction","réponses","settlers","sociales","throwing","unaffordable","université","unregistered","utilizing","vectorborne","vulnérabilité","waterways","“tiger”","awareness","childcare","disrupts","emotional","ethnicitybased","exclude","hinder","illness","impede","kin","landslides","recurrent","regulating","regulations","replaced","sensitivities","sitespecific","speaking","transcend","warnings","adams","arise","bigger","completely","constrain","decisionmaking","deskilling","determining","duong","excluding","exposing","filling","haas","hattum","inadequacy","instances","jewers","linh","outright","plays","point","presents","require","routine","sabateswheeler","skill","thao","van","xenophobic","ation","barrie","chronology","cial","compromise","concrete","distinguishing","diﬀerent","educ","emplo","finan","haysom","ina","influence","insecurity","ion","ledge","lega","lit","litica","loca","martin","metcalfe","netw","observe","occupational","orks","oﬀer","passage","posentation","repre","rewards","risksrewards","rri","shelte","socia","speciﬁc","sti","tio","tradeoﬀ","ymen","black","burden","dangerous","dimension","employers","employing","ethiopia","femaleheaded","inheritance","injury","isolation","men","minimal","motivated","nam","responsibility","secondlargest","separated","tanzania","unpaid","viet","widowed","women’s","adverse","alirol","carries","coined","consists","course","deduce","describe","determinants","emergency","exacerbated","ill","illhealth","individual’s","inequities","influenced","injuries","lifestyles","multitude","mutually","nonexisting","ompad","others","overcrowded","persisting","person’s","road","stated","threat”","thrive","unfavourable","unhealthy","wellbeing”","“triple","adherence","behaviours","campaigns","combined","cook","coupled","deportation","diagnostics","exceptional","followup","formally","forthcoming","gap","httpappswhointgbebwhapdffilesaarenpdf","impediments","jeopardy","lists","literacy","longtime","mberu","medication","migrationassociated","negatively","ohchr","paid","patients","preexisting","preventing","prohibitively","regarded","salazar","stressors","via","“health","“recognized","alami","avoided","catalysts","commercial","communicable","contacttracing","continues","contracting","deadly","deaths","diffused","dismissed","disparities","drives","dust","ebola","exposed","hivaids","illnesses","immunization","incidence","infected","kyobutungi","mines","occurring","outbreak","porous","ports","prevalence","prevalent","resourcepoor","ruralto","silica","staff","stigmatization","susceptibility","susceptible","transmission","transmit","unaids","usborn","victimization","wei","accessibility","ailments","ancestors","asthma","beds","began","blake","buried","cancer","capitals","chains","custom","davies","demonstrated","densely","detected","dhavan","diabetes","die","diet","epicentres","exercise","exploitation","genderbased","guinea","healthcare","heighten","implemented","intense","leone","liberia","matter","ncds","nonmigrants","outbreaks","populated","psychological","referral","regard","reigniting","respected","respiratory","responders","scattered","separation","sexual","shetty","sierra","smoking","stress","swiftly","unoccupied","village","voluntary","war","wellplanned","amount","anonymously","assured","beneficiaries","charges","churches","danger","dental","doctors","doctor’s","donations","entitled","equipment","examinations","expired","funded","german","herald","hospitals","httpwwwmaltesermigrantenmedizinde","inkind","interpretation","introduced","malta’s","mmm’s","nursing","opened","ordinary","partially","physicians","pregnancy","remuneration","spouses","supported","surgery","threshold","tumours","umbrella","visas","voluntarily","won","wooyoung","wwwkoreaheraldcomviewphpud","arrest","barrier","camp","circulate","clinic","collaboration","counterparts","dispersed","eastleigh","eliminates","eliminating","fagen","ferris","ferroribeiro","foregoing","havens”","howe","idmc","jacobsen","nondiscriminatory","persecution","purpose","refrain","registering","thereby","thought","travelling","weiss","“safe","aggravated","albuja","aleppo’s","carried","carrillo","ceballos","communities’","confront","damage","deikun","esnard","extensive","extracted","hosting","inflow","intercommunal","longlasting","malnutrition","massive","mercycorps","nonetheless","prices","quarter","republic’s","sapat","soaring","stances","stigma","tensions","threatened","turmoil","unmitigated","unskilled","waves","westward","worsens","zetter","abandon","alazraq","alfhood","belief","camps","confronting","cyber","damaged","dara’","dense","disputes","dwellings","empty","fail","feeling","governorates","greatest","happens","hosted","interventions","jordan","jordanian","lebanon","lengthy","litigation","look","majidi","mrajeeb","occupants","owners","preferred","protracts","relying","remainder","renting","sheltering","stronger","surveyed","unfinished","unhrc","unofficial","vacant","whereby","za’atari","acceptance","affecting","assisted","complicated","consultations","courses","curricula","disruptive","entirety","events","gives","immediacy","items","longerterm","medicines","modify","needing","presidency","program","reinforce","remedial","sherwood","speed","syrians","targeted","vaccination","adaptive","aim","assessment","chamber","commerce","drop","employ","establishes","explicitly","forwardthinking","goods","idea","multiplied","noncamp","priorities","publicprivate","recognizes","recommended","refugees”","regardless","regime","sold","turkey”","ventures","vocational","“social","accepted","assisting","bolin","charge","claimed","confidence","designing","disproportionally","hill","idps’","inform","infrastructural","inhabit","landuse","lastly","lies","localized","managers","mandates","occupying","outline","resiliencebuilding","responding","riverbanks","seibert","slopes","specifics","steep","submunicipal","subsidiary","underresourced","unserviced","unstable","wellinformed","“hazardscapes”","amati","andrew","arlikatti","benavides","bodies","broadcasting","burmese","burned","ceará","collapsed","complete","contacts","crimella","dagnan","disastrous","disruption","earthquake","eruption","evacuation","facetoface","favela","favelas","fifth","fires","flash","heavy","hydrogeological","janeiro’s","koike","koser","mushkatel","nonjapanese","nyiragongo","originally","overflow","paraíba","perlman","perry","phase","phillips","preference","progressively","radio","reconstruction","remoteness","rocinha","safer","sections","shepherd","soil","struck","subsequent","taibah","thomalla","tiles","tohoku","trapped","triple","volcanic","vuuren","wang","warning","wisner","wooden","adeola","belongings","closure","destruction","differential","effectiveness","emergencies","enarson","exhibit","fragility","guard","hartmann","hazard","houses","interpret","interruption","jonesdeweever","likelihood","lindell","macauslan","morrow","nonnatives","officers","perception","prerequisite","protracted","reactions","refusing","restrain","restricted","risky","rodríguez","unfair","unprotected","willingness","abused","aliens”","applied","charities","citizens","cold","contractual","deposits","devastating","disasteraffected","documented","dwkzwew","enforcement","falling","fearing","forty","homes","incidents","landlords","nets","payment","possibility","protected","repair","retaining","statements","staten","status”","storm","unassisted","victories","waiting","wave","weather","workplace","wwwbuzzfeedcomdavidnoriegatheundocumentedimmigrantswhorebuiltnewyorkaftersandy","wwwcensusgovcensus","wwwimmigrantingscomimmigrantsstruggleafterhurricanesandyhtml","wwwlatintimescomlatinovictimssandyneglectedhispanicgrouplaunchesofficialcomplaint","wwwmaketheroadorgreportphpid","“nonqualified","“temporary","allowing","complaints","continuity","contributes","converge","ended","fashion","fostered","giving","isolated","labourers","mobilization","nigerian","nonenglish","orozco","preparing","recruited","rehabilitation","sall","sparked","speakers","state’s","thousands","adapting","advocacy","advocate","advocating","afghan","alianza","assume","barrero","bosiakoh","communitybased","community’s","customs","dominican","dominicana","durana","efficiently","expenses","hardoy","healthrelated","katrina","marlowe","mechanisms","pandiella","participated","perpetuation","peruvian","postdisaster","prepare","selfhelp","snoxall","sommerville","stations","survivors","terrazas","tight","transferred","velásquez","visibility","actions","attracting","bolivia","bottomup","codes","collect","compare","connected","drainage","encroachment","escobar","eurofund","facilitation","gated","leveraging","looked","peru","plurinational","recreation","roads","served","sewage","sunlight","surrounded","undergone","ventilation","østergaardnielsen","“compass”","affordability","andes","bottom","carrol","circulation","communityled","company","credit","designating","discontent","disseminated","dumping","escobar’s","favour","financed","flooding","formalization","fundraising","httpmieforjpenbousaihtml","httpsicinfoorgen","informality","instrumental","leveraged","microbusinesses","minga","miyao","mothers","municipalitywide","negotiating","orleans’","perceive","potable","prefectures","rotating","routinely","selforganization","solidarity","spanishlanguage","spanishspeaking","station","streetlights","weekly","wwwhyogoiporjp","“participlan”","angeles’","body","cluster","collaborated","covered","culturally","demolition","disseminate","elliott","emiliaromagna","event","eventually","funding","governing","hauling","hispanic","independent","informed","joined","junepdfpdf","liaison","liguria","linguistically","northridge","pais","pakistani","partnered","pico","rescue","setup","sturge","tantissimistranierinotizieshtml","translocal","vinck","volunteers","wwwdemocracynoworgresidentsofnycschinatownturnto","wwwemgovaudocumentsprojectredconsultationreportfinal","wwwfamigliacristianaitarticoloanchetantiimmigratitragliangelidelfangoaspx","wwwilmessaggeroitprimopianocronacaterremotoemilialacaricadeivolontaritraloro","wwwmaribyrnongvicgovaupagepageaspxpageid","drastically","expand","fosters","immaterial","astonishing","believe","boat","borno","cameroon","chad","completing","computer","counted","didier","diploma","discourage","eat","engineering","english”","enough","explained","first”","flee","friend","fullfledged","got","grocery","harassment","hardworking","initially","intermittent","job”","journey","lagosian","lagos”","let","meant","months","northeastern","now”","n’djamena","optimistic","overcome","pidgin","proudly","ran","realized","reveals","satisfied","secondhand","sell","selling","sells","shoes","shoes”","situation”","slowly","speak","survive”","talks","telephone","toetotoe","wanted","welcomes","“although","“everything","“everywhere","“lagos","adjustment","behavior","capitalism","cataclysm","cdc","class","colombia","colonias","communicating","displacementfmrpdf","dynes","edumediaresearchfilesreportsnoncampdisplaced","globalised","lancet","morbidity","occurrences","personsundertheradaridpsoutsideofcampsoctpdf","quarantelly","radar","texas","warn","wwwbrookings","wwwcdcgovmmwrpdfwkmmpdf","wwwfmrevieworgenurban","analysessemwebpdf","bruecker","csp","ecosystems","gemenne","gottlieb","httppublicationsiomintbookstoreindexphp","imperative","ionesco","letters","mainpageproductinfocpathproductsid","ntp","reportrevisepdf","stop","tide","turning","tōhoku","websites","wwwiddriorgpublicationscollections","wwwidsacukfilesdmfileresearch","“innocent”","agrarian","alternatives","anthroscape","bbebefcffde","behavioral","blum","cgiarticlecontextgeogfaculty","disturbing","edc","fbeecaabfacdnat","gendered","gladwin","globalizing","haiti","httpacelscdncomsx","httpeausagepubcomcontentfullpdfhtml","httpecdceuropaeuenpublications","httpscholarswlucacgiviewcontent","kapur","laboratory","peacock","protecting","publicationshivaidssurveillancereporteuropepdf","p–","science","sociology","ssxmainpdftidabca","surveillance","s–s","weh","abandoned","bookstorefreeidmenpdf","bookstorefreeiomunhchrenwebpdf","boston","filespdf","gulf","hartman","httppublicationsiomint","httppublicationsiomintbookstorefreemrspdf","httppublicationsiomintbookstorefreewmrenpdf","internaldisplacementorgpublicationsglobalestimates","marta","martacountryenpdf","onforcedmigrationanddisplacement","peopledisplacedbydisasters","profiling","publicationsamcolombiaurbandisplacementsanta","reportsworlddisastersreportworlddisastersreportfocus","santa","squires","storms","thing","tufts","tuftsidmc","wwwifrcorgenpublicationsand","wwwinternaldisplacementorgassets","wwwodiorgsitesodiorgukfilesodiassetspublicationsopinion","afghanistan","contentuploadsmigrantrefugeeintegrationglobalcities","earthquakes","eastern","httpdxdoiorg","httpthehagueprocessorgwordpresswp","metrics","nairobi’s","noncitizens","organizational","orgresearchhealthcareimmigrantfamiliescurrentpoliciesand","postearthquake","publications","refugeecooperationorgpublicationsafghanistanpdfmajidipdf","resettled","sage","suburb","surviving","taylor","technologypdf","unattended","weerasinghe","wwwfmrevieworgen","wwwmigrationpolicy","academy","ahead","boulder","brinkerhof","bulletin","codevelopment","communityrefugee","considerations","developmentorozcopdf","hci","incorporation","interface","kabul","lecture","lynne","mafraq","maypdf","methodologic","mobiles","nexus","odiassetspublicationsopinionfilespdf","rienner","suppl","symposium","worldbankorgafrdiasporahlseminardiasporaand","wwwncbinlmnihgovpmcarticlespmc","wwwodiorgsitesodiorgukfiles","cald","dpm","gatekeepers’","georgia","ghanaian","httpworldriskreportentwicklunghilftdeuploadsmedia","ijmed","issa","lexington","marginality","myth","roy","sayyad","security”","unehs","wild","worldriskreportonlineiipdf","wwwijmedorgarticles","“examining","achievements","brookingspdf","completepdf","damascus","documentsunaidspublicationunaidsgapreportenpdf","falls","hometown","httphdrundporgsitesdefaultfilesreportshdren","httppublicationsiomintbookstorefree","httpunhabitatorgwpdmactprocessdidmtq","httpunhabitatorgwpdmactprocessdidmtqosobrsawr","journalslancetpiispdf","multisector","nyobrsawr","rrp","somerville","supportingdurablesolutionstodisplacementhaitifeb","unaidsorgsitesdefaultfilesenmediaunaidscontentassets","untapped","untappedresourceimmigrantintegration","update","wordpresswpcontentuploadsnairobithppdf","wwwmigrationpolicyorgresearchhometownassociations","wwwthelancetcompdfs","adaptations","closing","containment","doijxepdf","epidemic","equity","habitathiddencitieswebpdf","hidden","httponlinelibrarywileycom","impeded","miobrsawr","orleanians","qualitative","tbmigrationpdf","tropical","typhoons","undetected","unmasking","whointkobecentrepublicationshiddencitiesmediawhoun","whqlibdocwhointpublicationsengpdf","wwwwhointcsrdiseaseebolaone","wwwwhointtbpublicationswhoiom","yearreportfactorsen","bankoff","capabilities","frerks","hilhorst","mapping","netfilespdf","radix","wwwpreventionweb","citycity","coherent","commuter","diasporaled","dividends","entrepreneurs","establishing","exact","harness","pursue","yield","attempting","councils","demonstrate","fuels","natives","refine","tested","transformative","applies","bedford","characteristic","consumptionbased","demonstrates","dichotomy","educated","endowments","equate","friedmann","geographical","gollin","incomes","industrialization","industrializing","islanders","jedwab","keep","manufacture","nontradable","outcome","overtake","portion","premise","productionbased","quasiurban","reclassification","rural–","vollrath","workingage","agglomeration","arduous","asia’s","burgeoning","coming","commutes","das","delinking","deprive","discriminate","economists","ghate","glaeser","guranton","joshighani","journeys","notwithstanding","pervasive","profit","recommend","reference","robertson","saharan","scaling","securing","sight","sub","differing","reviewed","“transfer”","agricultural","ahafo","axinn","basa","believed","brong","certainly","chan","compensate","consumption","der","enhanced","evidenced","evolve","expect","fare","farming","fresh","geest","ghimire","guzman","highvalue","hire","hyperinflation","illiterate","indicates","luzon","massey","multifaceted","obvious","ochieng","potts","products","purposes","sampled","shorter","stimulates","upper","vegetables","villamil","waged","wealthy","younger","zimbabwe","accelerate","alleviating","castaldo","confer","deshingkar","egypt","elements","estate","expatriate","hometowns","instituting","invested","investments","investors","maghir","manpower","maximized","mckay","migrantsending","moroccans","outnumber","performance","prefer","reshaped","schemes","urbanbased","agriculturally","attests","benefitted","borrow","chronically","circle","dramatic","enduring","farrington","faster","funds","guangdong","guizhou","illustrate","illustrates","inland","jiangsu","male","multiplier","recipient","recipients","regularly","remittanceleveraging","remitting","repay","rwanda","save","semiurban","sent","southeastern","sums","transformation","uganda","virtuous","yuan","zhejiang","actor","adding","agree","bolivian","chain","charitable","crush","encourages","fruits","harnessed","mexico–united","microbusiness","mill","mixer","por","producers","saropalca","seed","seven","shares","succeeded","thirds","toropalca","uno”","wage","“saropalca”","“tres","acfrica","amounts","appears","array","carpenters","catering","collectors","commuting","craftsmen","dealers","discarded","earners","electrical","employees","employs","ewasterelated","factories","files","ghana’s","goats","handling","hierarchical","intestines","leather","leave","lucrative","manifestation","materials","metals","notsopoor","plastic","potters","printing","processed","producing","profitable","qualified","recycling","refurbishers","refurbishment","reservoir","salary","sale","salvaging","scrap","scraps","seldom","shops","surgical","tags","tailors","threads","trading","turnover","wheels","acquisition","ardayfio","ardayfioschandorf","artisans","assistants","beitbridge","bike","busiest","debt","dominated","dry","entrepreneurial","fee","genderspecific","girls","hairdressers","harass","heads","homeownership","jolly","kayayei","lebombo","lowermiddle","motor","negotiated","occupies","okada","operate","operators","owning","payments","persist","petty","reevew","remit","roles","schandorf","seasons","tension","titles","trades","vehicular","widows","accra“","adamu","baking","bead","boards","bread","bursting","canned","cardboard","carrying","cartons","challenging","comforts","confiscation","crossings","customers","determined","disbanded","easy”","enrol","explains","expose","financially","firstborn","floor","fluctuating","foods","front","held","home”","hopeful","housework","hurrying","join","kayayo","lay","loved","makola","meaning","meetings","none","occurrence","organize","pans","piled","popularly","predators","pregnancies","prohibitive","queues","rape","returns","robbery","rooms","saving","schedule","siblings","sleep","sleeping","soaps","stand”","staying","stricken","structured","subsistence","succeed","survive","teenage","threemonth","travelled","unwarranted","walewale","years’","“life","“together","abilities","adolescent","begin","bosnians","contradict","correlated","counteract","creativity","draining","ernst","ghs","halted","hyperdiversity","instrument","iraqis","kemeny","raising","researchers","somalis","spur","stabilize","start","sustainment","talented","tens","trillion","utica","vigdor","wealth","allocating","arguments","attraction","backgrounds","broader","collaborations","creative","crippled","dakota","dividend","haphazardly","heightened","homogenous","immigrantintegration","incubators","indiana","iowa","kansas","kentucky","lakes","louisville","lowerpaying","mediators","michigan","minnesota","missouri","nation","nebraska","pennsylvania","polarization","referenced","renewal","saunders","selfinterest","solely","staffing","structuring","tailored","true","unattractive","welldeveloped","wisconsin","backdrop","cheaper","clusters","commensurate","considerably","correspond","demographical","denial","depreciate","derive","deteriorate","engineers","error","farmland","filled","immediately","immigrants’","lowpaying","match","motivation","qualifications","suited","sumption","tech","technicians","trial","underemployment","virtual","“dropping","accurately","advice","aware","brokers","chambers","cityled","colleges","delivered","duplication","foundations","fragmentation","generic","highlighting","individualized","insertion","latest","liaise","lot","notforprofit","oriented","policymaker","realistic","supportive","unions","uptodate","“competitive”“creative”","“notforprofit”","airport","appointed","appointing","art","bci","biggest","canton","cantons","coaching","combine","communes","compilationindexhtml","confederation","favourable","fouryear","initial","jobseekers","letr","minipics","mixture","officer","oie","ordonnance","paras","pics","portuguese","preventionduracismeprogrammedintegrationcantonal","procurement","racism","recruiting","representative","statistique","subcontracting","sur","swiss","tolerance","translation","unemployed","weber","wwwadminchopcenclassified","wwwadminchopcfrclassifiedcompilation","wwwscrisvdch","wwwvdchthemesviepriveepopulationetrangereintegrationet","“minipic”","career","guidance","inhouse","matthey","mismatch","offering","possibly","steiner","strives","alevel","alevels","answers","apprenticeship","associates","attending","austria","austrian","authorities”","believes","brother","cathedral","danube","die”","everyone","fears","finds","fun","going","happy","headache”","heart”","homeland","improves","knows","likes","maybe","military","morning","museums","neighbours","nervous”","nineteenyearold","obligatory","park","participates","passing","people”","profession","qualification","quiet","really","run","rundown","sipan","sipan’s","someday","soon”","spends","stephen’s","subjects","sure","syria","thinks","touch","tough","wants","work”","“either","“politics","business–","co‑operation","easing","employmentrelated","energy","knowledgesharing","mortgages","multiplying","participating","pivotal","reduces","reuse","tapping","teaching","technology","trainings","bad","efficiency","employable","employee","golik","incur","irastorza","knowledgebase","necessity","opposite","participants","pool","recruitment","shachmurove","teder","upskill","viable","zimmermann","applications","attempted","audretsch","berliant","borjas","bureaucracy","channel","complementarities","entrepreneurships","fujita","gauthierloiselle","hammarstedt","hjerm","holding","hunt","innovativeness","intensive”","kalitanyi","kloosterman","leun","naudé","opening","owned","patent","played","preliminary","pushed","qualify","rath","selfselection","sixtynine","startup","strengths","tengeh","thurik","visser","vorderwülbecke","weaknesses","“knowledge","cityspecific","countryspecific","czech","denmark","desiderio","finland","fulfilled","minimum","nationally","norway","portugal","practically","proof","restriction","startups","submit","taxrelated","unless","angel","aspiring","hotlines","incubator","individually","invests","matched","mentor","mentoring","promising","proposals","scrutinized","sheets","sponsored","stages","suppliers","“incubators”","adviser","aiming","boomtowns","devolution","localtolocal","lowtech","negotiate","poststudy","puts","remitters","scots","scottish","specialist","wished","allies","alternatively","assert","broadly","budget","capacitybuilding","cuts","disposal","dynamism","empowering","evaluative","ewijk","framed","gauge","harnessing","intention","measurable","mutuality","notion","possess","pulling","sustain","swissfunded","territories","unfpa","unitar","“aid”","“benefits”","acknowledge","articulate","articulated","associative","autonomous","compelled","conducive","continuum","depend","fields","flourish","focal","heard","learnt","midterm","minimize","opinions","philanthropic","preserving","principles","reintegration","shortcomings","specificities","transparent","uncertain","upholding","actortificat","ant","ate","atio","cce","considering","cyc","egr","elo","enc","eng","enha","ensured","equ","etur","firmly","gratio","iden","igratio","inc","int","ipator","isciplal","ite","izatio","lus","ment","migr","migrament","migratio","migrngage","muterse","nced","ning","nni","ori","partic","pla","polic","popu","pre","pri","priorlannin","pro","procesvaluat","punctual","ree","rein","rem","righ","rtu","sectoral","seems","serval","snapshots","ssocigrant","summarize","tinu","tion","tiza","ula","upd","velo","velopning","vertical","viderss","admin","cit","connecting","eiv","formidable","igrants","medium","peertopeer","predeparture","prereturn","rec","senegal","senegalese","tap","academia","bangko","banking","barcelona","businessmen","church","citywide","conjunction","cooperating","coordinating","crossreferenced","development”","jointly","lasting","mayoral","multisectoral","ofws","participant","pilipinas","pioneers","reaping","sentral","submitted","“linking","approached","banks","bicol","bid","bongat","cdp","continuing","counsellors","developmental","draft","enabled","encompassing","endorsed","expert","legislative","nagueños","ofws’","pangasinan","panlungsod","philanthropy","philippine","pioneering","prioritization","provincial","realizing","sangguniang","sector”","statement","steps","subsector","suggestions","supplemented","tasked","version","workshops","“overseas","advertisement","ago","beams","boost","classroombased","expensive”","forever”","glad","hanoi”","hoa","husband","instructors","interested","kind","koreans","landlord","locals”","luckily","lucky","masters’","multiculturalism","occasional","organizes","perform","performing","pham","quynh","resolved","saying","scholarship","thi","wife","year”","captured","concurrence","driver","encompass","innovators","transition”","urban–","“urban","animals","cheat","exactly","fair","fraudsters","freely","happier","interacting","judge","kids","knew","kyrgyzstan","lady","met","misunderstanding","name","nationality","possibilities","prejudice","russia","saw","sincerely","somebody","soon","tajikistan","tells","trusted","usman","uzbekistan","zoo","circuits","crossroads","httpimrcca","httprddfidgovukoutput","immigrantsandcompetitivecitiespdf","model","norwegian","reportpdf","wellington","wpcontentuploadscapetowninformalityconference","wwwascoaorgsitesdefaultfiles","citiesofmigrationcawpcontentuploadsmunicipal","cprc","crossing","eurasian","gramme","httpmigratingoutofpovertydfidgovukfilesfilephpnamewp","internalmigrationremittancesandpovertypdfsite","kingston","manchester","multilocational","odi","ontario","percent","queen’s","reportmainreportpdf","researchpoliciessupportimmigrantentrepreneurship","rubicon","turks","ukfilesodiassetspublicationsopinionfilespdf","unbalanced","urbanize","wwwafsunorgwpcontentuploadsafsunpdf","wwwodiorgsitesodiorg","alfrescodownloadattachworkspacespacesstorecbc","businesses”","commission’s","delta","evaluation","ffcfaccoredppdf","freemovfinalreportpdf","fruitgrowing","httpalfrescouclouvainbe","httpeceuropaeujusticecitizenfilesdgjusteva","httpelibraryworldbankorgdoipdf","ieed","kyoto","leisure","mekong","minneapolis","nam’s","rethinking","siteresourcesworldbankorgextpremnetresourceseppdf","swedish","transformations","“ethnic","authorities’","creators","dissertations","esareamigrationanddevelopmentnewjmdireport","george","iiep","iiepwp","imiscoe","midwestimmigrationinitiativesandcapacitylocalleadership","migorpdf","opmentorgcontentmappinglocalauthoritiesepractic","publicationsdownloadsercdppdf","sciences","serc","takers","wwwbridgeidsacukreportscep","wwweconstoreubitstreampdf","wwwgwueduiiepassetsdocspapersjedwabiiepwp","wwwmigrationdevel","wwwspatialeconomicsacuktextonlyserc","wwwthechicagocouncilorgpublicationreimagining","­development","ann","approche","arbor","autres","basingstoke","berne","chdamdataekmdokumentationmaterialienmatnousfpdf","decentraliztionpdf","engaging","fédérale","geographers","grationpolicypracticejournaldecpdf","httppublicationsiomintbookstorefreemi","internaliste","keeping","london’s","l’identité","macmillan","mckayanddeshingkarinternalremittancesandpoverty","migratingoutofpovertydfidgovukfilesfilephpnamewp","moi","nepal","nous","oas","palgrave","pdfsite","une","wwwekmadmin","wwwoasorgsappublicationsenglish","wwwpscisrumichedupubspdfrrpdf","alleviation","andregionsvoiceimmigrationpolicycannationalpoliciesmeet","andtheglobalslum","environmentally","forbes","history","httpmigratingoutofpovertydfidgovukfilesfile","httppubs","iiedorgiiedhtml","kisumu","localdemand","lutiontopovertyinkenyapdfsite","murambatsvina","operation","order’","phpnamewpouchoouchoochiengismigrationtheso","pubsiiedorgpdfsiiedpdf","random","wwwforbescomsitesmegacitiestheglobalcity","wwwmigrationpolicyorgresearchgivingcities","‘restoring","dagara","dissertation","dutch","dutchmoroccan","dutchturkish","estonia","ethnicminoritiesandentrepreneurshipinestonia","farmer","httpdareuvanldocument","httpesaunorgunpdwuphighlights","httphdlhandle","httpsopenaccessleidenunivnlhandle","httpthehagueprocessorgengagement","immigrantowned","leiden","ncdo","nordic","pdfpolicywppwpppdf","populationpublicationspdfurbanizationwupreportpdf","withtheprivatesectoroninternationalmigration","wuphighlightspdf","wwwresearchgatenetpublication","wwwunorgendevelopmentdesa","wwwunorgendevelopmentdesapopulationpublications","bookstorefreemigrationpolicypracticejournalseptpdf","chengzhenhua","competencies","gemconsortiumorgreport","httpsopenknowledge","jiudi","lilun","publishing","revival","shizheng","theories","worldbankorghandle","wwwascoaorgsitesdefaultfilesimmigrationusrevivalreportpdf","xavier","zhongguo","asagents","collaborators","conﬂict","facets","oﬀered","proﬁle","seeks","ﬁnancial","autonomy","finance","happen","notably","aspect","assumes","builders”","constructors","homelands","interconnections","intertwined","intimately","metropolises","narrow","nested","politics","societal","supranational","wideranging","“bridge","africa’s","apartheid","berlin’s","broadbased","conventional","equally","holistic","implication","investing","kingsley","lessdeveloped","markers","outward","participatesthworldurbanforumheldmedellincolombia","satisfy","tasks","unwilling","vitality","wwwetuorgzatoolboxdocslocalgovwebidphtml","wwwiomintnewsiomactively","wwwstadtentwicklungberlindewohnenquartiersmanagementindexenshtml","“governance”","“socially","admissions","allocations","commitments","consistency","consultative","incoherence","regulate","reunion","select","statenominated","travers","activists","appropriation","birthright","child","choose","colour","coordinates","credentials","driver’s","emanate","enforce","entity","formalizing","inclusivity","indirectly","instate","jurisdictions","licences","michigan’s","newborn","outlaws","permit","statebased","tuition","unjust","attitude","california’s","dozens","enquire","entitlements","evident","evolved","fleeing","francisco’s","grants","inclusionary","judiciary","label","matching","needy","ordinance","outskirts","protest","ridgley","security’s","spence","supervisors","symbol","underpaid","“sanctuary","badenwürttemberg","bendel","binding","commissioners","conform","constitutionally","failed","federalized","guaranteed","learns","responds","schooling","targets","tries","verifiable","attain","bertelsmann","borkert","bosch","caponio","caught","convergence","deny","httpeceuropaeuewsienpolicylegalcfm","lowerincome","mainstreamed","matters","resourced","thirdcountry","tightening","africans","announced","attentive","candidates","combination","containing","contains","contracts","couples","curb","humanely","king","landscape","liberal","nonnational","nonnationals","pull","readmission","readmitted","reevaluation","regularized","requests","signing","acebillobaqué","alongside","approval","boosted","catalonia","colombian","cooperatives","coping","deficiencies","devolved","encountered","federallocal","ghanacoop","locally","mainsitemicrositesidmsessionsndowarepptpdf","modena","obliged","purse","smallscale","thriving","wwwiomintjahiawebdavsitemyjahiasitesharedshared","albeit","austerity","besides","blaser","cabannes","central–local","clunan","constitution","cooperatively","costefficiency","cut","democratically","dwellers’","expectations","landau","localgovernment","maintenance","neighbourhoodbased","oversight","precariously","privatization","scarce","testing","trinkunas","argentinas","defend","evasion","express","fell","fold","fora","gave","guaranteeing","guardian","institutionalizing","ley","participativo”","remarkably","rose","sewers","spent","uniquely","wwwtheguardiancomworldsepparticipatorydemocracyinportoalegre","“orçamento","attractiveness","bias","cards","conseils","councils”","divercities","edemocracy","emphasize","eumobile","exercised","fine","forum”","grant","guarantee","identification","interculturalstrategypdf","kempen","leases","painter","quartier","reconnecting","sensitive","sign","soziale","stadt","tuning","vote","wwwcoeinttdgcultureheritageculturecitiesreggio","“citizenship”","“creative”","“dublin","“entrepreneurial”","“europe","“neighbourhood","advise","ash","bloomberg","break","campaign","celebrate","celebrated","charter","citystate","councillor","cultures”","eufunded","finalpdf","foreignerparticipation","framework’","gjorgos","gli","httpwwwgiveprojecteuen","identities","impresa","internationaliza","italia","italy”","kaminis","karneval","kulturen","martinez","mortimer","objective","occasions","piloted","senate","serves","stranieri","strategy’","vienna’s","week”","wwwberlindelbintmigaufgabenindexenhtml","wwwdublinieuploadedfilesculturetowards","wwwnycgovhtmlimmhtmlhomehomeshtml","öktem","‘towards","“carnival","“one","“starting","bearers","conjuncture","devise","divergence","emigrants’","extends","harmony","leaders’","lin","mayors’","migrationled","mondinsieme","positioning","rebuild","reestablish","reposition","structure”","wwwannalindhfoundationorgmembersfondazionemondinsiemedelcomunedireggioemilia","“territorialized","armed","armenians","branding","candidacy","centuries","christian","christiansyriacs","connectedness","decimated","disempowered","emigrant","eu’s","incorporated","iraq","ironically","karfo","kurds","legacies","mardin’s","membership","parameters","population’s","recast","regenerate","regeneration","resettling","spanning","supervision","syriac","syriacs","turkey’s","valuable","citizenship”","complement","desires","disconnection","emplacement","empowerment","locationspecific","occurs","renewalrehabilitation","repositioning","adoption","appreciates","attends","bicycles","bike”","claims","contract”","daughter","doctoral","everything","facebook","flights","fortaleza","girl","hesitation","keeps","lidia","lidia’s","lisbon”","lovely","master’s","obtaining","parking","proud","received”","reminded","replies","sadness","safe”","sevenyearold","smile","spots","teaches","votes","want","“beautiful","“right","amsterdamedocssessionacebillopdf","antony’s","britain","catalan","ccmqfjaaurlhttpaffwwwoapenorgfdownload","college","coordinatingimmigrantintegrationgermanymainstreaming","dahrendorf","dicqusgafqjcnhyvkgujtvkwjpbagqezqqudgla","evaluating","federalandlocallevels","ftypeddocumentdociddeisyftvzmoaigwstt","httprddfidgov","iiedorgpdfsiiedpdf","responsiveness","softened","sovereignty","stanford","tools","ukpdfoutputsmigratingoutofpovwpblaserlandaupdf","ungoverned","wwwgooglechurlsatrctjqesrcssourcewebcdved","wwwmigrationpolicyorgresearch","wwwoldsantoxacukescfreedomrev","aoûtoctobre","countrydocsrabatnewsletterfroctoberpdf","documentationpdf","d’information","economicpolicyforumorgwpcontentuploadshainan","finalreportpdf","httpeceuropaeujusticecitizenfilesdgjustevafreemov","lettre","maroc","migratoire","mise","nouvelle","odiorgukfilesodiassetspublicationsopinionfilespdf","royaume","sepparticipatorydemocracyinportoalegre","wwwiomintfileslivesitesiomfiles","wwwodiorgsites","wwwtheguardiancomworld","œuvre","chinesecitieswillbehomeaboutbillionpeoplegetting","clarke","duracukresourcescscrodpmurbancitizenshippdf","durham","filespublicationsreportsreportcitylevelresponsespdf","genealogies","insurgent","metropolisurbangovernanceengpdf","minister","mossberger","populationmobilityandserviceprovisionpdf","stocktonontees","thepolicychallengesofmigrationen","urbanchinawork","wwwcompasoxacukfileadmin","wwweconomistcomnewsspecialreport","wwwlseacukgeographyandenvironmentresearchlondonpdf","wwwmetropolisorgsitesdefaultfilesmediarootdocumentsc","wwwoecdilibraryorgsocialissuesmigrationhealthtackling","balanced","bsa","contentuploadsdivercitiespolicybriefpdf","discontents","guidelines","inclusivecities","localgovernmentsorgcommitteesdaluploadnewsladsguidelines","nationstate","nova","publishers","wwwcities","wwwuclgcisdporgenobservatoryreportsworld","wwwurbandivercitieseuwp","alltime","fasturbanizing","ghettos","mean","mobilitylivelihood","renders","subset","assists","collier","digital","empowered","entails","mirrorunhabitatorgcontentasptypeidcatidcid","rethink","sparks","substantive","urgent","venables","wwwopencitieseuwebindexphpindicatorsen","bearing","builds","cater","collaboratively","exclusionary","fragmented","mind","advising","consolidation","dedicates","habitatiii","indexes","measuring","prominence","substantially","wwwuclgorgenissues","csae","unleashing","wwwcsaeoxacukworkingpaperspdfscsaewpspdf","arearegion","corridor","inmigration","megacity","squatter","workermigration","accordance","beneficial","covers","crosscountry","emphasis","encompasses","firms","fluid","interests…","locate","marks","repeated","secondthirdgeneration","suitable","understood","value”","“creating","asylum","bestowed","bona","categories—nativeborn","chemicalnuclear","coercion","command","departing","distinguish","exiting","famine","fide","habitual","hisher","internationalization","loosely","man","naturalenvironmental","noncitizens—","orientated","producer","refer","tribe","turnstile","“foreignborn”","“government”","alia","authorized","breach","constructed","crossed","descending","doc","ecn","expiry","generalized","gni","gnis","guiding","illegally","lacks","lawfully","lowermiddleincome","naturalhumanmade","north”","occupy","one’s","owing","referred","regulatory","subsequently","uppermiddleincome","violations","consisting","countryside","hybrid","landscapes","lesspopulated","pathway","repatriation","south”","avail","cartagena","compensations","convention","disturbed","domination","earned","habit","juris","memo","modified","monies","nationality”","nonresident","oau","order”","performed","protocol","sum","unity","wellfounded","“owing","acting","adjoining","administratively","authorization","builtup","chiba","continuouslysettled","depart","electric","functionally","inhabited","kawasaki","paved","periodic","pole","ranges","sewerage","squalor","submetropolitan","substandard","surplus","yokohama","absolute","blocks","depends","diminished","forming","lowdensity","motorized","poorlyplanned","tourban","welldefined","inclined"],"freq":[852,939,247,55,2,1,26,8,1,53,2,42,12,111,3,1,80,5,9,11,1,7,1,392,1,1,242,9,2,8,2,2,13,13,1,1,2,7,15,10,1,2,68,1,2,79,1,1,1,1,1,1,2,2,20,21,5,99,9,2,7,13,2,9,3,2,1,3,61,18,2,1,4,1,1,4,4,2,1,6,1,1,1,34,4,189,48,98,35,1,18,23,12,2,6,7,1,27,1,6,1,41,1,25,77,2,2,3,23,2,1,51,44,112,5,39,112,11,8,4,15,13,32,127,5,2,13,7,26,10,21,4,308,8,126,12,11,35,15,8,54,56,89,4,24,47,4,3,116,51,16,782,1,16,72,52,9,1,12,13,8,7,92,106,6,68,26,1,2,1,1,2,2,1,1,44,2,1,1,1,1,1,1,1,1,1,3,3,2,15,1,2,1,1,2,1,5,1,1,1,1,1,1,1,2,2,1,1,1,1,16,1,1,8,1,2,23,1,2,3,1,1,1,1,1,1,1,1,3,2,7,1,2,1,1,1,2,1,1,1,1,1,1,1,1,2,2,1,1,1,185,1,8,166,9,16,11,8,3,36,3,10,64,3,9,2,41,68,6,1,35,10,5,28,2,68,2,4,2,14,70,50,2,10,2,27,364,2,11,3,39,20,6,7,77,6,6,257,6,1,5,1,18,17,1,16,9,13,93,2,16,2,2,29,2,1,51,3,2,2,87,236,7,15,20,1,6,25,1,42,2,188,1,1,26,5,141,68,63,43,131,3,2,1,18,2,1,1,15,32,6,5,21,136,12,6,21,1,16,3,11,8,57,24,18,8,5,3,69,36,36,14,19,1,173,16,7,18,40,2,2,2,11,5,2,12,19,18,12,3,31,2,51,2,1,2,39,2,11,3,2,40,11,2,17,1,29,2,2,1,2,13,16,21,17,8,2,8,17,2,29,2,11,18,2,2,1,6,24,3,2,4,6,51,3,1,13,6,26,3,10,1,2,2,11,6,13,2,19,7,2,2,13,67,4,2,2,48,17,64,3,3,2,42,57,8,2,9,11,1,50,11,11,3,2,20,1,3,163,14,6,1,2,2,2,69,12,2,4,2,25,47,20,11,23,13,5,12,8,20,74,3,45,3,8,12,61,61,27,4,47,4,6,21,29,53,19,4,29,11,13,6,7,93,14,2,6,122,3,16,46,21,15,42,5,7,16,48,7,139,70,13,4,31,13,52,14,6,4,30,15,43,16,4,15,22,15,34,18,43,47,2,2,52,4,11,9,7,5,5,15,3,3,11,10,11,300,12,3,5,229,3,3,7,28,22,52,36,17,7,5,19,12,3,20,4,10,10,103,3,12,51,19,105,19,5,18,16,13,6,8,7,128,52,3,23,92,21,138,8,15,11,7,26,2,16,3,31,12,15,2,44,15,11,7,68,1,24,14,4,5,4,34,6,8,6,3,40,67,19,30,42,10,23,11,1,7,1,11,3,2,3,8,2,7,2,54,22,15,19,6,3,138,19,11,1,14,14,5,15,2,1,58,7,7,3,58,51,4,12,13,1,9,2,8,13,3,91,1,1,2,3,3,69,20,12,14,2,1,10,8,38,1,49,12,35,2,12,4,3,35,22,3,34,6,1,2,4,34,3,7,57,28,17,3,10,11,2,8,8,8,3,45,9,5,8,3,3,6,4,2,113,5,11,8,3,37,1,4,4,3,3,5,2,4,7,12,1,7,23,3,1,13,5,3,7,9,2,6,5,15,3,6,2,6,1,6,15,22,50,7,6,2,64,1,11,10,11,19,2,45,2,16,2,5,28,33,20,28,6,12,47,16,1,1,2,28,11,4,21,5,74,63,169,63,31,39,30,23,2,82,34,41,34,4,55,99,41,8,11,8,45,17,2,2,9,24,19,3,1,21,13,4,2,26,11,32,30,8,10,19,18,50,1,1,53,1,10,4,17,23,101,2,14,15,13,21,117,11,2,32,4,3,8,4,9,18,10,12,6,21,7,5,3,9,5,6,63,23,18,9,11,64,13,7,13,17,4,16,3,4,80,12,19,62,6,81,2,20,10,5,11,34,30,33,10,1,7,10,10,39,56,19,1,68,28,12,9,59,1,36,4,7,130,52,27,4,44,12,15,37,11,3,4,5,47,2,4,4,3,6,49,73,15,11,8,49,29,13,22,11,7,20,2,18,23,12,29,27,10,7,2,1,40,5,23,1,15,23,9,2,10,11,3,14,8,5,5,6,3,22,37,27,7,6,2,2,40,3,6,3,3,6,13,10,3,8,13,1,19,15,2,2,10,8,42,4,70,1,3,32,29,46,2,2,23,15,42,50,66,10,10,6,5,2,7,18,2,5,1,18,38,16,6,4,6,137,4,18,2,1,14,4,10,51,40,25,37,14,6,2,5,5,3,13,5,5,4,11,13,10,1,3,4,7,4,4,49,1,44,18,2,26,4,2,4,14,4,7,6,29,6,5,14,29,26,68,40,2,45,2,5,5,48,1,7,15,22,37,17,2,2,3,60,41,5,27,123,4,3,23,20,3,6,3,42,26,14,3,24,26,16,10,9,11,13,2,132,2,4,4,22,11,23,19,6,4,22,16,10,4,14,4,6,15,117,4,12,9,21,17,6,23,6,5,20,4,13,52,4,32,3,20,52,7,44,11,53,20,10,7,39,5,2,17,12,8,19,41,4,27,3,7,11,4,1,2,3,7,20,3,19,20,8,32,37,7,2,8,29,3,5,19,18,15,5,32,20,21,40,19,4,8,60,23,10,15,15,32,26,12,18,6,4,13,10,23,44,11,5,6,42,25,1,6,16,2,8,5,3,5,11,4,116,13,16,5,5,4,1,21,5,16,8,15,3,5,30,4,26,28,82,4,26,3,12,30,15,4,4,4,10,2,26,12,2,4,17,11,8,5,9,4,3,25,52,3,3,10,1,14,11,11,5,7,5,6,8,1,11,8,5,2,70,4,3,2,8,6,30,7,14,11,5,13,51,4,20,4,9,14,48,3,18,4,2,36,21,40,5,14,1,1,9,35,4,3,3,6,1,11,3,8,12,23,1,37,6,8,2,18,5,8,6,6,1,2,35,13,5,5,4,5,1,8,22,13,14,1,11,20,7,5,3,11,8,6,4,2,2,3,10,2,6,10,19,3,7,22,9,5,4,2,19,5,2,2,3,8,22,2,2,10,1,2,10,23,7,13,2,4,8,6,18,25,7,12,19,3,9,2,2,1,9,22,3,4,5,9,3,268,5,2,10,3,5,12,2,2,12,6,3,12,5,14,3,1,10,9,8,6,6,9,3,3,2,2,4,2,9,2,7,2,9,2,1,4,2,7,12,30,7,7,4,1,15,5,6,2,2,21,11,4,7,19,1,16,12,3,3,14,14,6,14,2,6,17,4,7,1,1,1,35,2,3,2,5,2,2,1,42,2,5,2,3,21,3,1,8,10,9,8,1,4,10,9,2,1,9,10,4,9,2,2,2,5,2,11,2,4,6,12,4,2,22,8,11,2,2,15,2,2,2,9,1,11,7,2,4,3,19,2,2,2,22,17,2,1,3,11,2,3,7,1,19,2,1,1,2,1,10,1,18,4,8,16,5,5,8,2,3,2,11,19,13,2,1,8,2,9,2,3,2,5,3,10,1,6,2,2,6,2,2,2,2,2,29,1,2,2,1,5,1,8,3,3,3,1,3,2,1,1,1,7,1,10,8,1,3,2,1,2,4,2,4,2,2,2,2,13,9,3,5,5,3,3,4,8,2,9,4,3,2,3,2,3,2,3,5,2,4,3,3,4,3,2,5,5,2,1,4,10,8,5,3,5,2,1,10,4,3,2,1,7,2,3,5,3,3,2,3,2,3,2,9,2,6,2,4,10,1,2,4,3,2,2,5,3,2,10,4,3,8,3,4,5,5,3,4,10,3,4,2,2,5,2,1,17,3,3,2,3,3,2,7,6,5,2,2,23,2,2,1,8,1,3,5,3,2,2,2,1,3,3,3,13,13,3,4,3,3,3,3,3,3,2,2,2,2,2,3,3,2,5,4,2,2,25,8,2,16,2,3,13,2,10,14,10,9,6,5,3,8,3,5,3,3,2,5,3,2,2,32,15,2,7,16,5,2,11,13,4,3,13,6,1,4,2,5,4,3,11,11,2,6,2,19,2,2,5,1,1,3,1,1,2,24,4,1,4,10,1,3,9,6,6,15,2,3,8,1,1,18,6,4,1,9,1,1,11,1,1,11,3,4,2,20,1,1,15,9,3,3,6,12,4,4,1,1,2,3,2,4,6,1,15,1,3,1,1,2,7,8,13,3,1,3,2,18,2,5,2,3,1,6,1,6,2,1,16,4,11,1,1,1,10,1,4,11,7,14,2,1,3,9,12,9,2,14,11,4,4,16,2,2,24,14,12,22,3,6,10,1,19,14,7,35,4,1,2,1,2,8,2,13,12,16,3,12,1,1,4,3,2,1,1,10,28,13,12,2,2,1,1,2,4,1,1,2,20,36,4,3,4,3,2,4,2,1,7,2,3,2,7,7,1,8,12,5,8,5,6,3,2,1,5,1,2,10,2,5,4,1,10,7,2,18,1,14,6,4,3,1,2,2,5,9,2,9,5,1,18,5,1,2,21,2,5,1,5,5,4,33,1,1,3,11,5,1,1,2,9,7,1,20,24,8,7,1,1,5,3,3,1,7,17,1,3,1,1,3,2,7,4,25,2,3,17,2,1,6,25,8,3,1,1,2,2,9,3,1,13,1,3,11,1,11,1,1,9,4,1,4,6,2,3,6,1,2,5,2,3,4,1,5,1,1,19,2,6,3,17,1,3,2,5,6,4,1,2,9,3,2,1,2,1,2,11,3,24,9,1,2,3,8,1,4,12,1,4,2,14,1,2,1,1,5,9,7,31,8,1,7,20,2,28,1,5,3,4,3,2,3,5,16,1,1,11,13,9,9,6,4,2,3,2,1,5,3,1,1,1,12,5,1,7,5,2,2,12,3,2,1,1,5,3,2,1,1,2,4,4,1,1,1,1,5,11,2,3,19,1,1,1,4,5,1,2,5,8,4,1,1,1,1,2,6,1,1,1,13,1,1,2,8,3,15,4,4,4,18,3,3,9,11,2,1,1,1,7,1,2,3,4,1,2,2,2,4,1,1,11,8,1,1,2,6,8,12,6,4,1,3,2,5,1,3,2,13,2,3,4,2,1,1,9,1,7,1,1,2,11,4,9,1,5,1,2,1,1,2,5,1,1,1,12,10,2,3,1,1,1,1,1,1,2,1,2,3,1,3,2,1,3,8,3,4,1,2,1,8,13,3,1,2,4,2,1,1,6,2,7,1,4,2,1,2,1,11,2,2,6,7,8,2,5,6,2,2,3,2,3,1,2,1,1,5,5,2,2,14,1,2,4,1,8,5,1,45,1,3,8,1,1,3,1,4,2,1,1,1,1,1,1,2,3,5,13,8,1,5,3,7,6,1,14,1,5,3,1,3,4,18,1,1,7,2,3,4,2,7,5,3,6,4,17,12,27,4,8,22,5,6,29,16,5,6,1,3,6,1,2,3,21,1,2,9,10,4,1,1,1,1,10,3,1,1,2,1,2,6,2,1,2,4,1,1,1,1,1,2,1,1,1,3,16,4,12,7,2,2,1,7,7,4,1,2,1,10,9,1,11,1,3,1,2,3,9,2,8,1,1,2,9,2,2,3,7,12,2,2,2,1,4,3,1,2,1,2,4,1,13,1,7,1,4,9,7,2,4,6,1,5,3,9,6,3,6,1,2,1,4,2,3,1,9,1,3,2,2,8,10,2,3,2,1,2,3,1,2,1,3,2,2,2,2,1,1,10,3,2,1,1,2,5,1,1,1,1,2,1,5,2,1,1,1,1,1,5,2,1,1,1,3,1,1,1,1,1,1,1,1,5,4,1,1,3,1,1,1,1,2,1,2,15,2,3,1,1,7,6,2,14,4,16,4,3,3,5,1,4,1,5,3,6,4,2,5,7,2,10,4,3,7,6,8,5,3,2,1,4,4,13,5,8,2,5,6,2,2,1,7,1,9,6,5,6,5,13,3,7,1,1,8,7,6,2,2,11,1,4,2,5,2,1,3,9,4,7,2,3,2,1,1,2,1,2,6,3,3,5,2,2,2,1,2,7,1,15,5,4,2,10,1,1,1,19,17,1,1,15,4,9,2,1,27,2,1,3,1,12,6,9,1,2,1,5,1,5,3,6,1,1,1,14,8,2,6,5,11,1,3,1,9,1,1,2,3,1,1,5,24,3,3,8,1,5,2,2,3,4,10,2,4,1,4,2,2,6,4,7,2,8,1,3,1,1,10,2,2,9,5,1,3,2,9,14,1,4,9,3,2,3,2,2,10,6,6,2,5,1,1,8,4,5,2,1,1,1,3,1,1,1,1,1,4,1,12,3,3,2,5,1,4,1,2,1,1,2,1,7,1,5,3,5,26,2,16,1,2,3,1,2,1,1,5,1,1,8,1,1,3,6,1,8,3,3,3,2,3,8,34,11,1,1,1,1,2,4,1,2,1,1,1,3,3,2,2,1,2,1,4,2,2,1,1,1,1,8,3,2,6,5,1,1,4,12,4,2,4,6,8,2,8,9,5,2,4,2,2,1,8,5,1,2,3,17,4,7,5,1,1,8,1,1,1,10,1,1,1,1,1,4,11,7,1,2,7,8,3,1,2,1,3,4,2,1,2,3,1,1,4,13,2,1,3,2,8,9,26,6,1,7,2,1,3,3,5,8,7,2,1,2,1,3,2,2,2,11,1,1,13,1,2,1,1,5,2,2,4,6,1,13,2,8,4,2,5,3,4,1,11,3,3,2,4,1,6,1,4,2,5,2,2,2,10,1,3,2,5,2,1,2,3,9,3,1,2,2,1,2,2,3,3,4,2,2,13,2,1,2,8,2,1,2,1,5,3,1,7,1,2,3,1,4,14,3,1,2,9,2,2,4,1,1,1,1,4,3,4,1,3,4,1,1,1,1,5,1,3,5,3,1,4,4,5,3,2,2,2,1,2,7,1,6,8,4,2,8,9,6,1,3,3,1,3,7,6,2,3,1,2,2,2,5,1,1,2,2,1,1,1,1,2,1,1,1,1,2,1,1,1,1,1,1,1,2,1,2,3,1,2,1,1,1,2,3,1,1,3,1,1,1,1,1,1,1,2,11,1,8,1,1,1,1,3,2,1,1,2,1,5,1,3,2,1,1,1,2,1,1,1,4,2,1,2,1,1,3,1,4,2,2,1,2,2,4,1,1,1,1,2,1,1,1,1,1,10,1,1,1,2,1,1,1,1,1,5,1,2,2,3,1,1,4,1,4,1,1,1,1,3,2,2,1,1,15,8,3,1,2,1,5,1,6,2,5,2,2,2,1,2,6,3,6,1,3,1,1,1,1,2,10,1,1,1,1,11,1,1,3,2,3,2,1,19,5,1,7,1,12,1,4,1,1,3,1,1,3,3,1,5,2,1,1,16,14,1,1,2,3,6,5,9,2,1,1,1,1,4,2,1,4,1,2,1,1,1,1,3,1,1,1,3,4,1,3,1,3,1,3,1,8,1,5,1,1,7,1,1,1,2,1,2,6,1,4,4,1,30,1,4,1,4,2,6,3,2,2,6,2,6,1,1,4,1,1,1,1,1,1,1,2,4,1,2,3,5,4,1,2,2,8,3,3,4,1,10,1,3,1,5,3,1,2,1,2,1,1,2,3,8,1,2,7,1,7,18,10,1,1,6,3,1,5,1,5,8,2,1,3,2,1,10,1,2,3,8,6,2,4,3,8,8,1,3,4,2,2,2,2,1,1,2,3,1,3,1,3,4,9,2,1,1,5,10,2,7,2,3,1,1,1,1,2,2,3,5,6,1,6,2,1,1,1,6,9,1,1,1,1,6,1,4,1,4,1,1,1,1,1,2,5,1,2,7,1,1,1,1,1,1,1,1,1,7,3,3,3,5,4,3,1,1,2,2,2,1,1,1,1,4,2,1,2,2,5,4,10,1,2,5,1,6,2,2,1,3,5,2,2,1,1,2,1,1,2,1,4,3,4,1,4,1,17,11,8,2,1,4,11,8,2,1,1,1,1,2,5,1,9,1,2,2,2,1,1,1,1,4,5,2,1,1,1,2,1,5,1,2,14,2,1,1,2,1,1,3,1,3,1,2,3,1,1,2,2,1,2,2,1,1,1,3,1,2,4,5,6,1,1,2,2,3,5,12,4,5,2,1,2,8,1,4,4,1,1,1,2,4,4,3,1,24,9,9,6,1,2,5,1,3,1,1,1,2,1,4,5,10,1,2,2,1,1,1,1,1,3,13,1,5,2,1,1,2,3,4,7,2,3,3,21,3,1,10,1,4,1,1,1,5,8,2,8,2,5,2,1,4,1,10,10,3,2,4,1,1,1,2,1,1,1,2,1,2,1,1,1,2,1,5,1,1,2,2,3,7,1,2,1,5,2,1,1,1,5,1,3,1,1,4,3,1,3,2,2,2,1,4,5,5,3,2,14,1,1,1,2,4,4,2,3,2,6,1,1,2,1,6,6,4,1,1,8,3,1,1,2,1,1,3,1,4,3,1,2,4,2,5,1,1,4,3,1,4,4,1,1,2,2,8,2,3,1,1,2,1,1,1,1,1,1,1,2,1,1,1,1,4,2,1,3,2,1,1,1,1,1,2,1,1,1,1,2,4,3,1,2,1,1,2,1,3,1,1,1,1,1,2,2,4,1,2,2,1,1,1,1,1,1,1,1,1,1,1,1,2,4,2,2,2,4,3,1,1,3,2,1,1,2,2,2,2,1,1,1,3,1,1,1,1,1,7,2,5,1,1,1,1,1,1,4,1,1,1,2,1,2,2,8,3,1,1,1,4,1,1,1,3,3,1,2,1,1,1,1,1,1,1,1,1,1,1,1,3,4,2,1,3,2,4,2,3,1,1,1,1,1,3,1,1,1,2,1,1,1,1,1,2,2,4,1,1,1,1,1,1,1,1,2,1,2,1,1,3,1,1,4,1,1,1,1,1,1,1,1,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,3,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,3,2,3,1,2,1,2,2,2,2,1,4,2,1,1,3,2,1,6,5,1,1,1,1,1,1,1,1,1,8,2,1,1,3,1,1,1,1,1,1,1,1,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,4,2,34,2,1,7,5,15,4,2,4,8,5,4,5,9,8,7,2,3,3,6,5,5,2,2,2,2,4,1,2,1,4,13,1,2,5,2,1,2,2,4,3,2,5,7,5,1,1,2,7,2,1,2,5,2,2,5,1,6,3,3,2,1,1,1,1,1,1,1,1,2,11,1,2,7,2,2,1,2,8,5,2,2,1,4,1,6,2,2,6,2,4,1,1,2,3,1,6,1,1,2,4,3,4,3,3,18,4,3,3,11,7,7,6,2,3,3,1,12,1,1,1,6,5,2,4,9,2,2,2,3,2,6,1,3,1,2,4,1,2,2,2,3,1,1,2,2,4,1,1,2,2,4,1,1,2,3,1,1,2,1,1,1,1,1,6,1,1,1,2,3,1,2,1,3,1,1,3,1,1,1,1,1,2,1,1,2,1,6,2,1,2,1,1,6,2,1,2,4,3,1,9,1,1,1,2,1,6,2,2,2,1,2,7,2,2,2,1,2,2,2,2,2,1,2,2,1,4,9,2,4,1,4,5,2,14,5,2,1,1,1,1,3,1,1,1,1,1,7,1,7,6,4,1,1,1,1,1,4,2,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,3,3,5,16,1,1,1,1,2,3,8,2,4,4,7,1,1,3,1,5,1,1,1,5,2,1,1,2,1,1,10,16,1,1,2,3,3,2,2,1,1,3,1,2,8,3,1,1,3,1,2,1,1,2,1,2,1,2,3,3,3,2,5,1,1,1,2,3,5,1,3,1,1,3,1,3,1,1,1,4,2,7,1,1,1,1,2,1,3,1,1,2,2,1,7,2,1,3,1,1,2,1,1,2,4,1,6,4,4,3,1,2,1,2,1,3,2,2,1,3,4,1,1,1,6,1,1,2,5,1,3,1,1,3,3,1,1,1,1,1,2,1,1,1,2,1,2,1,3,1,2,1,1,1,1,3,4,2,1,4,1,6,3,1,1,3,2,2,2,4,1,3,2,1,1,1,2,3,2,1,2,1,1,2,1,1,3,6,4,1,3,1,3,1,2,1,2,1,2,1,2,2,2,1,1,1,6,1,1,1,2,1,2,1,1,1,5,1,5,1,2,1,3,5,1,3,1,2,1,2,1,1,1,2,1,2,1,1,4,2,1,2,1,1,3,2,2,1,1,2,3,2,1,3,7,1,2,1,1,1,3,1,1,2,1,1,5,2,2,1,5,4,3,2,1,6,6,2,1,1,4,2,2,1,2,1,3,1,3,1,4,2,1,1,4,1,1,1,4,1,1,1,1,4,1,1,2,1,1,1,2,2,1,1,2,1,2,2,11,3,1,3,2,1,5,2,1,2,1,2,1,1,1,3,2,1,1,1,2,3,1,5,1,1,1,2,1,3,2,1,1,1,6,2,1,1,3,1,1,1,1,2,1,1,2,2,10,7,1,1,2,5,2,5,1,3,2,1,1,9,2,1,2,4,2,1,1,1,3,2,2,1,1,6,2,2,2,3,3,1,2,1,1,1,1,1,3,1,2,1,1,1,1,1,2,1,1,3,1,2,1,1,1,1,1,1,2,2,1,1,2,3,2,3,4,1,2,1,1,1,1,5,2,2,1,1,6,1,7,1,1,3,1,2,1,2,1,1,2,6,3,1,1,1,1,1,2,5,2,3,1,2,4,5,2,1,2,1,3,1,1,3,2,2,1,3,1,3,1,3,2,1,5,3,2,1,1,2,1,1,2,2,1,1,1,2,3,2,1,1,2,1,2,2,3,1,3,2,1,1,1,2,1,2,2,2,3,1,1,1,1,5,1,20,1,2,1,1,1,1,1,2,1,1,1,3,1,1,1,2,2,1,2,2,1,2,1,3,1,1,1,1,1,1,1,1,1,1,1,1,1,4,1,1,5,1,1,1,4,3,3,2,2,2,1,4,1,1,1,3,1,1,2,2,1,1,1,1,1,1,2,2,2,6,1,1,1,1,3,3,2,4,1,8,2,2,4,1,1,1,2,1,1,2,2,2,2,3,1,2,2,2,5,4,4,3,1,1,2,3,2,1,1,2,1,1,2,1,1,1,1,1,1,1,1,1,1,1,4,1,1,1,2,2,1,1,3,3,1,1,2,1,1,3,2,1,1,1,1,1,3,2,1,1,1,2,1,1,4,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,4,2,1,1,3,1,1,2,1,1,2,5,3,1,1,1,3,1,1,1,1,1,1,2,1,1,1,1,2,2,1,6,2,1,1,1,1,1,1,1,2,1,1,1,2,1,1,1,4,1,2,1,8,1,3,2,2,1,2,1,1,3,1,1,1,1,2,1,3,1,1,2,1,1,1,3,4,1,1,4,2,6,1,1,1,2,1,2,1,1,2,1,1,1,1,1,2,1,1,2,1,4,1,1,1,1,1,2,1,1,1,1,6,5,1,2,2,1,1,1,3,1,1,1,1,1,2,1,1,1,2,1,1,1,1,1,1,1,3,1,1,1,1,1,3,1,2,1,2,1,1,1,2,2,1,1,1,1,1,2,2,1,3,1,2,2,1,2,1,1,1,1,1,2,1,1,7,2,1,2,2,1,1,1,1,1,1,1,1,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,2,2,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,2,1,1,1,8,1,1,1,1,3,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,4,1,1,2,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,1,1,3,1,1,1,1,3,2,1,5,30,7,2,4,5,2,2,4,1,1,2,1,1,3,2,2,1,1,1,3,2,1,1,2,2,2,3,3,1,1,2,2,1,1,3,1,1,2,1,1,4,1,2,2,8,1,1,2,2,1,2,1,1,1,1,2,2,2,2,1,1,1,3,1,3,2,1,3,1,1,1,1,1,1,2,1,2,2,1,1,2,2,1,2,4,2,1,1,1,2,4,2,2,2,2,1,1,1,1,1,1,2,3,1,2,2,5,4,1,1,1,1,3,2,1,1,1,5,1,1,2,1,8,2,2,1,4,3,1,2,11,9,1,1,1,4,2,2,2,2,1,1,1,1,1,1,1,1,1,1,2,1,2,1,3,1,1,1,2,1,1,2,2,1,1,2,1,1,2,1,1,1,3,2,2,5,1,1,1,1,1,1,1,1,2,1,2,2,2,1,1,1,1,1,1,1,1,1,3,2,1,1,2,1,1,1,1,1,1,1,1,1,3,1,2,1,1,1,1,1,6,2,1,1,1,1,1,1,1,1,2,4,1,1,2,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,2,1,1,1,1,2,1,1,2,1,2,1,2,1,2,1,1,2,1,6,2,1,3,1,1,1,1,2,9,1,1,1,2,1,1,3,1,1,1,1,1,2,1,3,1,1,2,1,2,1,1,1,7,1,2,1,1,1,1,1,1,1,2,1,1,1,4,3,1,1,1,4,1,2,1,1,1,1,2,4,1,2,1,1,1,2,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,3,1,1,1,1,1,2,2,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,3,1,2,1,1,1,1,1,1,5,1,1,1,1,1,2,1,1,1,1,1,4,1,1,1,1,1,2,1,1,1,1,4,5,2,3,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,1,2,1,1,2,1,1,2,1,1,1,1,3,2,1,1,1,1,1,3,1,1,2,1,1,1,1,1,1,1,1,1,2,2,2,1,2,5,1,4,1,1,1,1,1,1,1,3,1,1,3,1,1,1,1,3,5,1,2,1,4,2,1,5,1,3,1,2,1,2,1,1,1,1,1,1,5,3,4,6,3,1,1,3,1,2,1,1,3,2,1,1,1,1,1,1,1,1,3,1,1,2,1,2,2,1,2,2,2,1,1,4,1,1,2,1,1,1,3,1,2,2,2,3,2,2,1,1,1,1,1,1,11,2,1,1,1,1,1,1,1,1,1,2,1,2,1,1,2,1,1,2,2,1,1,1,1,1,1,1,2,3,2,2,1,1,1,1,2,1,8,1,1,1,1,1,1,2,1,5,1,1,3,1,1,1,2,1,1,1,1,1,1,1,2,1,2,1,1,2,1,1,4,1,1,1,2,1,3,1,2,1,5,3,1,2,2,1,2,2,1,1,2,2,2,1,1,1,1,4,2,2,2,2,2,1,1,2,2,2,2,4,1,1,1,2,1,1,2,1,1,2,1,2,2,2,2,1,1,2,1,2,4,2,3,1,2,1,2,5,1,1,1,3,1,1,1,2,1,1,1,1,1,1,1,2,2,1,1,1,1,2,1,1,2,1,1,4,1,1,3,1,1,1,1,2,2,1,1,1,1,2,3,2,1,1,1,2,1,3,1,1,1,1,1,1,3,1,1,2,1,2,1,1,1,1,2,1,2,1,2,2,1,3,1,1,1,1,1,1,1,2,2,1,2,3,4,1,1,1,1,1,1,2,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,2,3,2,1,1,1,6,1,1,3,1,1,3,1,2,2,1,4,1,2,1,1,2,1,1,1,1,1,1,1,2,1,3,1,1,2,1,1,1,2,1,1,1,1,1,1,1,1,1,1,3,1,1,1,1,1,1,2,1,1,1,3,1,1,4,1,4,1,1,1,1,1,8,2,1,2,1,1,1,1,1,2,1,4,1,1,1,1,1,8,1,1,1,1,1,1,1,1,1,1,6,1,1,2,1,1,1,1,1,1,1,1,1,3,1,1,1,2,1,1,4,1,1,2,2,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,2,1,1,1,1,1,1,1,2,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,6,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,3,1,2,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,3,1,1,1,1,4,3,2,2,2,1,1,1,3,3,2,1,3,1,2,4,1,6,1,1,1,1,3,1,1,3,1,1,3,3,2,1,1,2,1,1,2,2,1,2,1,1,2,1,1,2,1,1,1,1,1,1,1,2,1,1,1,2,1,1,2,1,1,1,1,1,1,1,1,1,2,2,1,1,1,3,1,1,1,1,1,1,2,3,1,1,2,1,1,1,1,1,1,1,1,1,1,2,1,2,1,1,1,1,1,2,2,1,1,1,2,1,1,1,1,2,1,1,1,1,1,2,1,2,1,1,1,1,2,1,2,2,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,5,1,1,1,1,1,2,1,2,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,2,1,1,1,1,1,1,1,2,2,2,2,1,1,1,1,1,1,3,2,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,2,2,1,2,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,2,1,1,1,1,2,1,1,2,3,1,2,1,2,1,1,1,1,1,1,1,4,1,1,1,1,1,1,1,1,2,1,1,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,3,1,1,1,1,1,1,2,1,1,2,1,2,1,1,1,1,2,1,1,1,1,1,1,1,5,2,1,1,1,1,1,1,1,1,8,3,2,1,1,1,1,1,2,1,1,3,1,1,1,1,1,1,1,1,1,4,1,1,1,1,1,1,1,1,13,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,3,1,2,1,1,2,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,4,1,1,1,1,1,1,1,4,1,1,1,1,1,2,1,1,1,1,1,1,1,2,4,1,1,1,1,1,2,1,1,1,2,2,2,1,1,2,2,1,2,1,1,1,1,1,1,1,1,1,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"fontFamily":"sans-serif","fontWeight":"bold","color":"random-dark","minSize":0,"weightFactor":0.2875399361022364,"backgroundColor":"white","gridSize":0,"minRotation":-0.7853981633974483,"maxRotation":0.7853981633974483,"shuffle":true,"rotateRatio":0.4,"shape":"circle","ellipticity":0.65,"figBase64":null,"hover":null},"evals":[],"jsHooks":{"render":[{"code":"function(el,x){\n                        console.log(123);\n                        if(!iii){\n                          window.location.reload();\n                          iii = False;\n\n                        }\n  }","data":null}]}}</script>
+<script type="application/htmlwidget-sizing" data-for="htmlwidget-dca7f6e430e6ce796ab3">{"viewer":{"width":450,"height":350,"padding":0,"fill":true},"browser":{"width":960,"height":500,"padding":0,"fill":true}}</script>
+</body>
+</html>

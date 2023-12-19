@@ -1,0 +1,325 @@
+---
+title: "group_project_markdown"
+author: "Wong Nicole"
+date: "2023-12-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, echo = FALSE, warning = FALSE)
+```
+
+# Demographic, Political and Economic Influences on Taiwanese Emigration Intentions: A Comprehensive Analysis
+
+## Background
+
+Spikes in emigration waves is occurring, with the global number of migrants has been increasing steadily over the years. One of these countries experiencing emigration waves is Taiwan. Taiwan is facing a significant talent drain, DGBAS estimating a 1.4 annual growth in Taiwanese leaving Taiwan. Given such, we would like to investigate the emigration trend of Taiwan in the past two decades, and analyze the reasons why Taiwanese citizens want to emigrate.
+
+## Research Question
+
+**Research Question:** What are the primary factors affecting Taiwanese willingness to emigrate in the past two decades?
+
+**H0:** No trend in Taiwanese emigration can be found.
+
+**H1:** There is a significant relationship between political factors, economic factors, and Taiwanese willingness to emigrate in the past two decades.
+
+**H2:**There is a significant relationship between geographic factors (such as age, gender, years of education, and family status) and Taiwanese willingness to in the past two decades.
+
+# Load Libraries and Data
+
+```{r}
+# load libraries
+library(tidyverse)
+library(haven)
+library(ggplot2)
+library(stargazer)
+
+# load libraries for word cloud
+library(tm)
+library(wordcloud)
+library(pdftools)
+library(wordcloud2)
+library(magick)
+```
+
+The data used in this project is sourced from "Panel Study of Family Dynamics" (PSFD), by the Research Center for Humanities and Social Science at the Center for Survey Research, Academia Sinica.
+
+After going through the documentation, we selected the following datasets. These datasets contain general information, including demographic data, and satisfaction scores. It also includes two variables: (1) whether or not they plan on emigrating, and (2) the main reason for emigration.
+
+It is noted that some years, such as 2006, 2009, 2012, 2013 and 2015 cannot be accessed or are missing multiple key variables.
+
+```{r}
+# load sav files
+x_2007 <- read_sav("data/2007_spss.sav")
+x_2008 <- read_sav("data/2008_spss.sav")
+x_2010 <- read_sav("data/2010_spss.sav")
+x_2011 <- read_sav("data/2011_spss.sav")
+x_2014 <- read_sav("data/2014_spss.sav")
+x_2016 <- read_sav("data/2016_spss.sav")
+```
+
+## Clean and Merge Datasets
+
+Next, relevant variables are selected and re-coded to be identifiable and consistent as the names of the variables differ across years.
+
+```{r}
+d_2007 <- x_2007 |>
+  select(age = x01b, sex = a01, happiness = a03a, qol = a03b, health = a04a, job = a05, married = a16, m = b01, m_factor = b02, s_job = d07d, s_home = d07e, p_child = f01, income = a10b)
+
+d_2008 <- x_2008 |>
+  select(age = x01b, sex = a01, happiness = a03a, qol = a03b, health = a04a, job = a05, married = a16z01, m = b01, m_factor = b02, s_job = c07a, s_home = c07b, p_child = e03, income = a10a04)
+
+d_2010 <- x_2010 |>
+  select(age = x01b, sex = a01,happiness = a03a, qol = a03b, health = a04a, job = a05, married = a16z01, m = b01, m_factor = b02, s_job = c07a, s_home = c07b, p_child = e03, income = a10a)
+
+d_2011 <- x_2011 |>
+  select(age = x01b, sex = a01,happiness = a03a, qol = a03b, health = a04a, job = a05, married = a16a, m = b01, m_factor = b02, s_job = c07a, s_home = c07b, p_child = e03, income = a10a)
+
+d_2014 <- x_2014 |>
+  select(age = x01b, sex = a01,happiness = a03a, qol = a03b, health = a04a, job = a05, married = a16a, m = b01, m_factor = b02, s_job = c07a, s_home = c07b, p_child = d03, income = a08a)
+
+d_2016 <- x_2016 |>
+  select(age = x01b, sex = a01,happiness = a03a, qol = a03b , health = a04a, job = a06b, married = a17a, m = b01, m_factor = b02, s_home = b12, p_child = d03, income = a09a01)
+
+# job satisfaction is not available in the 2016 data set, so it is replaced with NA
+d_2016$s_job <- NA
+```
+
+Before merging the datasets, we need to add a column "year". Then, we can use rbind to merge the datasets.
+
+```{r}
+# get list of dataset names
+dataset_names <- ls(pattern = "^d_\\d{4}$")
+
+# add column year where the value = year in the name of the dataset
+for (name in dataset_names) {
+  year <- gsub("^d_(\\d{4})$", "\\1", name)
+  dataset <- get(name)
+  dataset <- dataset %>%
+    mutate(year = year)
+  assign(name, dataset)
+}
+
+
+datasets <- list(d_2007, d_2008, d_2010, d_2011, d_2014, d_2016)
+datasets <- lapply(datasets, function(dataset) {
+  dataset|>
+    mutate_if(is.labelled, unclass)
+})
+
+# Combine the modified datasets using rbind
+d <- do.call(rbind, datasets)
+```
+
+```{r}
+# rename values for m_factor (emigration factor)
+value_mapping <- c("1" = "Career",
+                   "2" = "Partner's career",
+                   "3" = "Child's education",
+                   "4" = "Dissatisfied with local environment",
+                   "5" = "Cost of living",
+                   "6" = "Political concerns",
+                   "97" = "Others")
+d <- d |>
+  mutate(m_factor = recode(m_factor, !!!value_mapping, .default = "N/A")) |>
+  mutate(m = recode(m, "1" = "yes", "2" = "no"))
+```
+
+## Demographic Data
+
+```{r, echo=TRUE}
+# plot stacked bar chart using demographic data
+
+dem_bar <-
+  ggplot(d_2016, aes(x = factor(age), fill = factor(sex))) +
+  geom_bar(position = "stack") +
+  scale_x_discrete(labels = c("58-69 years", "67-86 years", "45-57 years", "38-44 years", "25 years and older")) +
+  scale_fill_manual(values = c("lightblue", "pink"), labels = c("Male", "Female")) +
+  labs(x = "Age Group", y = "Count", title = "Distribution by Age Group and Sex", fill = "Sex") + 
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("visualizations/dem_bar.png", dem_bar)
+```
+
+## Emigration Trend Across the Years
+
+To plot the trend, we need to obtain the percentage of respondents who plan to emigrate grouped by year
+
+```{r}
+filtered_data <- d |>
+  filter(!is.na(m), !is.na(year))
+
+# create table of percentage planning to emigrate by year
+summary_table <- filtered_data |>
+  group_by(year) |>
+  summarize(m_yes = sum(m == "yes"),
+            m_no = sum(m == "no")) |>
+  mutate(percentage_yes = (m_yes / m_no) *100)
+# summary_table
+rm(filtered_data)
+```
+
+```{r}
+# plot emigration trend
+m_trend <-
+ggplot(summary_table, aes(x = year, y = percentage_yes)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Year", y = "% of Respondents who Plan on Emigrating", title = "Emigration Trend in Taiwan from 2007 to 2016") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("visualizations/m_trend.png", m_trend)
+```
+
+## Emigration Factors Across the Years
+
+```{r}
+filtered_data <- d %>%
+  filter(!is.na(m_factor), !is.na(year), m == "yes", m_factor != "N/A")
+
+# plot stacked bar chart using m_factor
+m_factor_stacked <-
+ggplot(filtered_data, aes(x = year, fill = m_factor)) +
+  geom_bar() +
+  labs(x = "Year", y = "Number of Respondents who Plan to Migrate", fill = "Migration Factor", title = "Emigration Factor Trends") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("visualizations/m_factor_stacked.png", m_factor_stacked)
+```
+
+We can also use a 100% stacked bar chart to see the change in proportion more quickly (not included in poster but included in presentation)
+
+```{r}
+# plot 100% stacked bar chart using m_factor
+m_factor_100 <-
+ggplot(filtered_data, aes(x = year, fill = m_factor)) +
+  geom_bar(position = "fill") +
+  labs(x = "Year", y = "Proportion of Respondents who Plan to Migrate", fill = "Migration Factor", title = "Emigration Factor Trends (Proportion)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("visualizations/m_factor_100.png", m_factor_100)
+```
+
+### Regression
+
+For the regression, we used a logistic regression model.
+
+For producing the output table, we used Stargazer for the regression statistics. As we faced some technical errors while trying to output the summary statistics for the table, we used summary(d) to manually input the max, min and mean.
+
+### Political & Economic Factors
+
+```{r}
+# recode 
+d$m_recode <- ifelse(d$m == "yes", 1, 0)
+# regression model
+pe_model <- glm(m_recode ~ happiness + qol + health + s_home + s_job, data = d, family = binomial)
+
+#summary(pe_model)
+
+stargazer(pe_model, title = "Political & Economic Factors", summary = TRUE, align = TRUE, type = "html", out = "visualizations/pe_model.html")
+```
+
+```{r}
+# Calculate the max, min, and mean for the specified variables
+d|>
+  select(happiness, qol, health, s_home, s_job) |>
+  summary()
+```
+
+### Geographic Factors
+
+```{r}
+# filter values larger than 999,991 from the "income" column (based on codebook)
+d$income[d$income > 999991] <- NA
+```
+
+```{r}
+# recode 
+d$m_recode <- ifelse(d$m == "yes", 1, 0)
+# regression model
+g_model <- glm(m_recode ~ sex + age + p_child + income + married, data = d)
+
+#summary(pe_model)
+
+stargazer(g_model, title = "Geographic Factors", align = TRUE, type = "html", out = "visualizations/g_model.html")
+```
+
+```{r}
+d|>
+  select(sex, age, p_child, income, married) |>
+  summary()
+```
+
+### Education
+
+Additionally, we can take a look at the factor education (not included in poster but in presentation). This factor is only recorded in the 2016 dataset so we need to process it seperately
+
+```{r}
+d_2016_edu <- x_2016 |>
+  select(m = b01, edu = a03c)
+d_2016_edu <- d_2016_edu|>
+  mutate_if(is.labelled, unclass) |>
+  mutate(m_recode = ifelse(m == "1", 1, 0))
+```
+
+```{r}
+# regression model
+edu_model <- glm(m_recode ~ edu, data = d_2016_edu)
+
+#summary(pe_model)
+
+stargazer(g_model, title = "Education", align = TRUE, type = "html", out = "visualizations/edu_model.html")
+```
+
+```{r}
+d_2016_edu|>
+  select(edu) |>
+  summary()
+```
+
+## Word Cloud
+
+As part of our introduction, we would like to explore the different factors that influence migration. To do this we created a word cloud using the world migration report from the UN.
+
+```{r}
+# Step 1: Convert PDF to text
+pdf_file <- "data/wmr2015_en.pdf"
+text <- pdf_text(pdf_file)
+
+# Step 2: Preprocess the text (cleaning, tokenization, etc.)
+words_to_remove <- c("international", "manage", "new", "report", "iom", "partnerships", "world", "city", "country", "cities")
+
+# Step 2: Preprocess the text (cleaning, tokenization, etc.)
+corpus <- Corpus(VectorSource(text))
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removeWords, c(stopwords("english"), words_to_remove))
+corpus <- tm_map(corpus, stripWhitespace)
+
+# Step 3: Generate word frequency
+dtm <- DocumentTermMatrix(corpus)
+word_freq <- colSums(as.matrix(dtm))
+
+# Step 3: Generate word frequency
+dtm <- DocumentTermMatrix(corpus)
+word_freq <- colSums(as.matrix(dtm))
+
+# Step 4: Create the word cloud
+w_cloud <-
+wordcloud2(
+  data = data.frame(word = names(word_freq), freq = word_freq),
+  size = 1.5,
+  fontFamily = "sans-serif",
+)
+
+# Save the wordcloud as an HTML file
+html_file <- "visualizations/wordcloud.html"
+htmlwidgets::saveWidget(w_cloud, file = html_file, selfcontained = TRUE)
+```
+
+## 

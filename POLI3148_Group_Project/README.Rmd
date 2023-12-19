@@ -1,0 +1,48 @@
+---
+title: "README"
+author: "Wong Nicole"
+date: "2023-12-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Demographic, Political and Economic Influences on Taiwanese Emigration Intentions: A Comprehensive Analysis
+
+Spikes in emigration waves is occurring, with the global number of migrants has been increasing steadily over the years. One of these countries experiencing emigration waves is Taiwan. Taiwan is facing a significant talent drain, DGBAS estimating a 1.4 annual growth in Taiwanese leaving Taiwan. Given such, we would like to investigate the emigration trend of Taiwan in the past two decades, and analyze the reasons why Taiwanese citizens want to emigrate.
+
+## Overview
+
+**Research Question:** What are the primary factors affecting Taiwanese willingness to emigrate in the past two decades?
+
+**H0:** No trend in Taiwanese emigration can be found.
+
+**H1:** There is a significant relationship between political factors, economic factors, and Taiwanese willingness to emigrate in the past two decades.
+
+**H2:**There is a significant relationship between geographic factors (such as age, gender, years of education, and family status) and Taiwanese willingness to in the past two decades.
+
+## Installation
+
+Install the required packages for the project by running the following code:
+
+```{r}
+install.packages(c("tidyverse", "haven", "ggplot2", "stargazer", "tm", "wordcloud", "pdftools", "wordcloud2", "magick"))
+```
+
+```{r}
+rmd_file <- "project.Rmd"
+
+# Execute the code from the R Markdown document
+output_dir <- "report"
+
+# Render the R Markdown document with the specified output directory
+rmarkdown::render(rmd_file, output_dir = output_dir)
+```
+
+Once the packages are installed, the "Load Libraries" section can be run to load the libraries necessary for the project.
+
+## Usage
+
+After installing the packages, you can use the "run all" function in "report/project.Rmd" or directly run the code below:
